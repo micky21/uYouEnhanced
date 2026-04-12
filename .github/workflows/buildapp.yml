@@ -144,6 +144,30 @@ jobs:
           sed -i '' "30s#.*#BUNDLE_ID = ${{ env.BUNDLE_ID }}#g" Makefile                          # Modify the bundle ID
           sed -i '' "29s#.*#DISPLAY_NAME = ${{ env.APP_NAME }}#g" Makefile                        # Modify the app name
           sed -i '' "1s#.*#export TARGET = iphone:clang:${{ inputs.sdk_version }}:14.0#g" Makefile # Modify the SDK version
+          # Fix bundle IDs inside app and extensions
+         # Fix bundle IDs inside app and extensions
+          APP_PATH=$(find ${{ github.workspace }}/main -path "*/Payload/*.app" -type d | head -n 1)
+          
+          if [ -z "$APP_PATH" ]; then
+            echo "No app found"
+            exit 1
+          fi
+          
+          cd "$APP_PATH"
+          
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${{ env.BUNDLE_ID }}" Info.plist
+          
+          find . -path "*appex/Info.plist" -type f | while read plist; do
+            appex_dir=$(dirname "$plist")
+            name=$(basename "$appex_dir" .appex)
+            /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${{ env.BUNDLE_ID }}.$name" "$plist"
+          done
+          
+          echo "App path: $APP_PATH"
+          find . -path "*appex/Info.plist" -type f
+          
+          cd ../../
+          
           make package THEOS_PACKAGE_SCHEME=rootless IPA=Payload/YouTube.app FINALPACKAGE=1
           echo "package=$(ls -t packages | head -n1)" >>$GITHUB_OUTPUT
           echo -e "==> \033[1mSHASUM256: $(shasum -a 256 packages/*.ipa | cut -f1 -d' ')\033[0m"
