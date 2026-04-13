@@ -26,6 +26,11 @@ on:
         default: "com.google.ios.youtube"
         required: true
         type: string
+      team_id:
+        description: "Your AltStore Team ID (suffix added by AltStore to bundle ID)"
+        default: ""
+        required: true
+        type: string
       app_name:
         description: "Modify the app name"
         default: "YouTube"
@@ -162,15 +167,15 @@ jobs:
             exit 1
           fi
 
-          FINAL_BUNDLE_ID="${{ env.BUNDLE_ID }}.5G8C68L3T6"
+          # Leave main bundle ID as-is so AltStore adds its suffix normally
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${{ env.BUNDLE_ID }}" "$APP_PATH/Info.plist"
 
-          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $FINAL_BUNDLE_ID" "$APP_PATH/Info.plist"
-
+          # Patch extensions with the final bundle ID that AltStore will assign to main app
           find "$APP_PATH" -path "*appex/Info.plist" -type f | while read plist; do
             appex_dir=$(dirname "$plist")
             name=$(basename "$appex_dir" .appex)
-            /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $FINAL_BUNDLE_ID.$name" "$plist"
-            echo "Patched: $FINAL_BUNDLE_ID.$name"
+            /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${{ env.BUNDLE_ID }}.${{ env.TEAM_ID }}.$name" "$plist"
+            echo "Patched: ${{ env.BUNDLE_ID }}.${{ env.TEAM_ID }}.$name"
           done
 
           cd work
@@ -186,6 +191,7 @@ jobs:
           THEOS: ${{ github.workspace }}/theos
           UYOU_VERSION: ${{ inputs.uyou_version }}
           BUNDLE_ID: ${{ inputs.bundle_id }}
+          TEAM_ID: ${{ inputs.team_id }}
           APP_NAME: ${{ inputs.app_name }}
 
       - name: Upload Artifact
