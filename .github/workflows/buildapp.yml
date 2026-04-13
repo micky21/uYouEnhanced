@@ -167,26 +167,12 @@ jobs:
             exit 1
           fi
 
-          # Leave main bundle ID as-is so AltStore adds its suffix normally
+          # Only patch main bundle ID, leave extensions with original Google bundle ID
+          # so AltStore can handle them correctly during re-signing
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${{ env.BUNDLE_ID }}" "$APP_PATH/Info.plist"
 
-          # Patch extensions with the final bundle ID that AltStore will assign to main app
-          find "$APP_PATH" -path "*appex/Info.plist" -type f | while read plist; do
-            appex_dir=$(dirname "$plist")
-            name=$(basename "$appex_dir" .appex)
-            /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${{ env.BUNDLE_ID }}.${{ env.TEAM_ID }}.$name" "$plist"
-            echo "Patched: ${{ env.BUNDLE_ID }}.${{ env.TEAM_ID }}.$name"
-          done
-
-          # Re-sign each extension after patching
-          find "$APP_PATH" -name "*.appex" -type d | while read appex; do
-            ldid -S "$appex"
-            echo "Re-signed: $appex"
-          done
-
-          # Re-sign main app
-          ldid -S "$APP_PATH"
-          echo "Re-signed main app"
+          echo "Main app patched: ${{ env.BUNDLE_ID }}"
+          echo "Extensions left with original bundle IDs for AltStore to handle"
 
           cd work
           zip -qr "../${IPA_FILE}" .
