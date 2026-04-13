@@ -47,6 +47,9 @@ on:
         required: false
         type: boolean
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -159,13 +162,15 @@ jobs:
             exit 1
           fi
 
-          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${{ env.BUNDLE_ID }}" "$APP_PATH/Info.plist"
+          FINAL_BUNDLE_ID="${{ env.BUNDLE_ID }}.5G8C68L3T6"
+
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $FINAL_BUNDLE_ID" "$APP_PATH/Info.plist"
 
           find "$APP_PATH" -path "*appex/Info.plist" -type f | while read plist; do
             appex_dir=$(dirname "$plist")
             name=$(basename "$appex_dir" .appex)
-            /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${{ env.BUNDLE_ID }}.$name" "$plist"
-            echo "Patched: ${{ env.BUNDLE_ID }}.$name"
+            /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $FINAL_BUNDLE_ID.$name" "$plist"
+            echo "Patched: $FINAL_BUNDLE_ID.$name"
           done
 
           cd work
