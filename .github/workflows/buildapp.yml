@@ -178,6 +178,16 @@ jobs:
             echo "Patched: ${{ env.BUNDLE_ID }}.${{ env.TEAM_ID }}.$name"
           done
 
+          # Re-sign each extension after patching
+          find "$APP_PATH" -name "*.appex" -type d | while read appex; do
+            ldid -S "$appex"
+            echo "Re-signed: $appex"
+          done
+
+          # Re-sign main app
+          ldid -S "$APP_PATH"
+          echo "Re-signed main app"
+
           cd work
           zip -qr "../${IPA_FILE}" .
           cd ..
