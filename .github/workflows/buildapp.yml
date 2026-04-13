@@ -26,11 +26,6 @@ on:
         default: "com.google.ios.youtube"
         required: true
         type: string
-      team_id:
-        description: "Your AltStore Team ID (suffix added by AltStore to bundle ID)"
-        default: ""
-        required: true
-        type: string
       app_name:
         description: "Modify the app name"
         default: "YouTube"
@@ -154,7 +149,7 @@ jobs:
 
           make package THEOS_PACKAGE_SCHEME=rootless IPA=Payload/YouTube.app FINALPACKAGE=1
 
-          # Patch bundle IDs AFTER packaging, directly on the final IPA
+          # Patch IPA after packaging
           cd ${{ github.workspace }}/main/packages
           IPA_FILE=$(ls -t *.ipa | head -n 1)
           cp "$IPA_FILE" work.zip
@@ -167,12 +162,11 @@ jobs:
             exit 1
           fi
 
-          # Only patch main bundle ID, leave extensions with original Google bundle ID
-          # so AltStore can handle them correctly during re-signing
-          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${{ env.BUNDLE_ID }}" "$APP_PATH/Info.plist"
-
-          echo "Main app patched: ${{ env.BUNDLE_ID }}"
-          echo "Extensions left with original bundle IDs for AltStore to handle"
+          # Remove problematic extensions that cause bundle ID mismatch with AltStore
+          find "$APP_PATH" -name "AppMigrationExtension.appex" -type d | while read appex; do
+            rm -rf "$appex"
+            echo "Removed: $appex"
+          done
 
           cd work
           zip -qr "../${IPA_FILE}" .
@@ -187,7 +181,6 @@ jobs:
           THEOS: ${{ github.workspace }}/theos
           UYOU_VERSION: ${{ inputs.uyou_version }}
           BUNDLE_ID: ${{ inputs.bundle_id }}
-          TEAM_ID: ${{ inputs.team_id }}
           APP_NAME: ${{ inputs.app_name }}
 
       - name: Upload Artifact
