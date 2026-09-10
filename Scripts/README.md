@@ -20,6 +20,7 @@ selector audit (`crash_analyzer.py audit`) plus reference dumps in `refdata/`.
 | `local_symbolicate.py` | Map `.ips` imageOffset values to function starts using `refdata/` |
 | `disasm_find_sel.py` | Disassemble a function (capstone) and resolve `__objc_selrefs` references |
 | `resolve_selref.py` | Decode chained-fixup selector slots into selector strings |
+| `verify_ipa.sh` | Verify a final IPA against a reference (pre-injection) IPA: fails if any `.appex` survives outside `PlugIns/`, any config file still references `AppMigrationExtension`, or any bundle ID changed vs. the reference |
 
 ## Typical debugging flow
 
