@@ -330,8 +330,20 @@ static BOOL uYouConvertWebmAudioToM4a(NSString *webmPath, NSString *m4aPath) {
         if (returnCode == 0 && [fm fileExistsAtPath:m4aPath]) {
             unsigned long long fileSize = [[fm attributesOfItemAtPath:m4aPath error:nil] fileSize];
             if (fileSize > 0) {
-                HBLogInfo(@"[uYouPatches] WebM→M4A conversion succeeded: %@ (%llu bytes)", m4aPath, fileSize);
-                return YES;
+                // Exit code + size alone don't prove the m4a is actually playable
+                // audio: a truncated/corrupt file can still pass both checks and
+                // get handed to the merge step, where any failure was previously
+                // only caught by the generic try/catch or the 30-45s stall
+                // watchdog. Verify it actually has a usable audio track first.
+                AVURLAsset *check = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:m4aPath] options:nil];
+                AVAssetTrack *audioTrack = [[check tracksWithMediaType:AVMediaTypeAudio] firstObject];
+                if (audioTrack && CMTimeCompare(check.duration, kCMTimeZero) > 0) {
+                    HBLogInfo(@"[uYouPatches] WebM→M4A conversion succeeded: %@ (%llu bytes, %.1fs)", m4aPath, fileSize, CMTimeGetSeconds(check.duration));
+                    return YES;
+                }
+                HBLogWarn(@"[uYouPatches] WebM→M4A output exists but has no valid audio track/duration: %@", m4aPath);
+                [fm removeItemAtPath:m4aPath error:nil];
+                return NO;
             }
         }
 
