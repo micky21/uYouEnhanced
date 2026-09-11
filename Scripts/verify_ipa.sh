@@ -71,8 +71,17 @@ while IFS= read -r final_appex; do
   name="$(basename "$final_appex")"
   ref_appex="$(find "$REF_APP" -name "$name" -type d | head -n1)"
   if [ -z "$ref_appex" ]; then
-    fail "$name exists in final IPA but not in reference (unexpected new bundle)"
-    BUNDLE_ID_MISMATCH=1
+    # Not in the reference (pre-injection) IPA at all - this is expected for
+    # extensions the pipeline deliberately injects (e.g.
+    # OpenYouTubeSafariExtension.appex via the "Clone Open in YouTube" +
+    # cyan steps). Check 1 already guarantees it's under PlugIns/; just
+    # sanity-check its bundle ID is properly namespaced under the parent's,
+    # rather than failing outright.
+    new_id="$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$final_appex/Info.plist" 2>/dev/null || echo "")"
+    case "$new_id" in
+      "$FINAL_ID".*) ok "$name is a new bundle (injected by the pipeline), correctly namespaced: $new_id" ;;
+      *) fail "$name is a new bundle not namespaced under the parent app ($FINAL_ID): $new_id"; BUNDLE_ID_MISMATCH=1 ;;
+    esac
     continue
   fi
   ref_id="$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$ref_appex/Info.plist" 2>/dev/null || echo "")"
