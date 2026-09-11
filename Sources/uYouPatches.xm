@@ -410,34 +410,38 @@ static void UYTMergeAudioVideo(NSString *videoPath, NSString *audioPath, NSStrin
             [fm removeItemAtPath:outputPath error:nil];
         }
 
-        AVAssetExportSession *export = [[AVAssetExportSession alloc] initWithAsset:composition presetName:AVAssetExportPresetPassthrough];
-        if (!export) {
+        // NOTE: do not name this variable `export` — it's a reserved C++
+        // keyword (unused/deprecated but still reserved) and .xm files compile
+        // as Objective-C++, so `AVAssetExportSession *export = ...` fails with
+        // "expected unqualified-id" on every subsequent use.
+        AVAssetExportSession *exportSession = [[AVAssetExportSession alloc] initWithAsset:composition presetName:AVAssetExportPresetPassthrough];
+        if (!exportSession) {
             HBLogWarn(@"[uYouPatches] UYTMergeAudioVideo: could not create AVAssetExportSession");
             completion(NO);
             return;
         }
-        export.outputURL = [NSURL fileURLWithPath:outputPath];
-        export.outputFileType = AVFileTypeMPEG4;
-        export.shouldOptimizeForNetworkUse = YES;
+        exportSession.outputURL = [NSURL fileURLWithPath:outputPath];
+        exportSession.outputFileType = AVFileTypeMPEG4;
+        exportSession.shouldOptimizeForNetworkUse = YES;
 
         __block BOOL finished = NO;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeout * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (finished) return;
             finished = YES;
             HBLogWarn(@"[uYouPatches] UYTMergeAudioVideo: timed out after %.0fs, cancelling", timeout);
-            [export cancelExport];
+            [exportSession cancelExport];
             completion(NO);
         });
 
-        [export exportAsynchronouslyWithCompletionHandler:^{
+        [exportSession exportAsynchronouslyWithCompletionHandler:^{
             dispatch_async(dispatch_get_main_queue(), ^{
                 if (finished) return; // timeout already fired and called completion
                 finished = YES;
-                if (export.status == AVAssetExportSessionStatusCompleted) {
+                if (exportSession.status == AVAssetExportSessionStatusCompleted) {
                     HBLogInfo(@"[uYouPatches] UYTMergeAudioVideo: merge succeeded -> %@", outputPath);
                     completion(YES);
                 } else {
-                    HBLogWarn(@"[uYouPatches] UYTMergeAudioVideo: merge failed status=%ld error=%@", (long)export.status, export.error);
+                    HBLogWarn(@"[uYouPatches] UYTMergeAudioVideo: merge failed status=%ld error=%@", (long)exportSession.status, exportSession.error);
                     completion(NO);
                 }
             });
