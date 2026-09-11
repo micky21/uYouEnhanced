@@ -1,5 +1,6 @@
 #import "uYouPlus.h"
 #import "uYouPatches.h"
+#import <AVFoundation/AVFoundation.h>
 
 # pragma mark - uYou Patches
 // Uses reverse-engineered uYou 3.0.4 source for reference.
@@ -342,6 +343,99 @@ static BOOL uYouConvertWebmAudioToM4a(NSString *webmPath, NSString *m4aPath) {
     return NO;
 }
 
+// --- Own Audio/Video Merge, bypassing uYou's closed merge routine ---
+// (#452/#241/#520/#830/#676) — Diagnosis: uYou's mergeAudioWithMP4VideoForDownloadItem:/
+// mergeAudioWithVideoForDownloadItem: use AVAssetExportSession internally, inside
+// uYou.dylib (closed source, not this repo). Pre-converting webm audio to m4a
+// (above) removes the codec mismatch, but the merge call itself still runs
+// closed-source code we can't inspect or fix, and it's the thing that has been
+// observed to hang forever without throwing (see UYTAudioStillWebm's comment).
+// This performs the actual A/V merge with public AVFoundation API instead —
+// same effect (mux one video track + one audio track into an .mp4), zero
+// dependency on uYou's own merge code. If anything about our own merge fails,
+// callers fall back to uYou's original method unchanged (see call sites below).
+static void UYTMergeAudioVideo(NSString *videoPath, NSString *audioPath, NSString *outputPath, NSTimeInterval timeout, void (^completion)(BOOL success)) {
+    if (!videoPath.length || !audioPath.length || !outputPath.length) {
+        completion(NO);
+        return;
+    }
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if (![fm fileExistsAtPath:videoPath] || ![fm fileExistsAtPath:audioPath]) {
+        HBLogWarn(@"[uYouPatches] UYTMergeAudioVideo: missing input file(s) video=%@ audio=%@", videoPath, audioPath);
+        completion(NO);
+        return;
+    }
+
+    @try {
+        AVURLAsset *videoAsset = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:videoPath] options:nil];
+        AVURLAsset *audioAsset = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:audioPath] options:nil];
+        AVAssetTrack *videoTrack = [[videoAsset tracksWithMediaType:AVMediaTypeVideo] firstObject];
+        AVAssetTrack *audioTrack = [[audioAsset tracksWithMediaType:AVMediaTypeAudio] firstObject];
+        if (!videoTrack || !audioTrack) {
+            HBLogWarn(@"[uYouPatches] UYTMergeAudioVideo: missing track(s) video=%@ audio=%@", videoTrack, audioTrack);
+            completion(NO);
+            return;
+        }
+
+        AVMutableComposition *composition = [AVMutableComposition composition];
+        AVMutableCompositionTrack *compVideoTrack = [composition addMutableTrackWithMediaType:AVMediaTypeVideo preferredTrackID:kCMPersistentTrackID_Invalid];
+        AVMutableCompositionTrack *compAudioTrack = [composition addMutableTrackWithMediaType:AVMediaTypeAudio preferredTrackID:kCMPersistentTrackID_Invalid];
+
+        NSError *insertError = nil;
+        if (![compVideoTrack insertTimeRange:CMTimeRangeMake(kCMTimeZero, videoTrack.timeRange.duration) ofTrack:videoTrack atTime:kCMTimeZero error:&insertError]) {
+            HBLogWarn(@"[uYouPatches] UYTMergeAudioVideo: video insertTimeRange failed: %@", insertError);
+            completion(NO);
+            return;
+        }
+        if (![compAudioTrack insertTimeRange:CMTimeRangeMake(kCMTimeZero, audioTrack.timeRange.duration) ofTrack:audioTrack atTime:kCMTimeZero error:&insertError]) {
+            HBLogWarn(@"[uYouPatches] UYTMergeAudioVideo: audio insertTimeRange failed: %@", insertError);
+            completion(NO);
+            return;
+        }
+        compVideoTrack.preferredTransform = videoTrack.preferredTransform;
+
+        if ([fm fileExistsAtPath:outputPath]) {
+            [fm removeItemAtPath:outputPath error:nil];
+        }
+
+        AVAssetExportSession *export = [[AVAssetExportSession alloc] initWithAsset:composition presetName:AVAssetExportPresetPassthrough];
+        if (!export) {
+            HBLogWarn(@"[uYouPatches] UYTMergeAudioVideo: could not create AVAssetExportSession");
+            completion(NO);
+            return;
+        }
+        export.outputURL = [NSURL fileURLWithPath:outputPath];
+        export.outputFileType = AVFileTypeMPEG4;
+        export.shouldOptimizeForNetworkUse = YES;
+
+        __block BOOL finished = NO;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeout * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (finished) return;
+            finished = YES;
+            HBLogWarn(@"[uYouPatches] UYTMergeAudioVideo: timed out after %.0fs, cancelling", timeout);
+            [export cancelExport];
+            completion(NO);
+        });
+
+        [export exportAsynchronouslyWithCompletionHandler:^{
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (finished) return; // timeout already fired and called completion
+                finished = YES;
+                if (export.status == AVAssetExportSessionStatusCompleted) {
+                    HBLogInfo(@"[uYouPatches] UYTMergeAudioVideo: merge succeeded -> %@", outputPath);
+                    completion(YES);
+                } else {
+                    HBLogWarn(@"[uYouPatches] UYTMergeAudioVideo: merge failed status=%ld error=%@", (long)export.status, export.error);
+                    completion(NO);
+                }
+            });
+        }];
+    } @catch (NSException *e) {
+        HBLogWarn(@"[uYouPatches] UYTMergeAudioVideo threw: %@", e);
+        completion(NO);
+    }
+}
+
 // Post-conversion check: is the item's audio still WebM? If yes, calling
 // %orig would hang forever inside AVAssetExportSession (it never completes
 // an mp4+webm merge and never throws), so callers must skip the merge.
@@ -606,6 +700,43 @@ static void UYTArmStallWatchdog(id item, NSTimeInterval seconds) {
         return;
     }
 
+    // Level-3 fix: try our own AVFoundation merge first — it doesn't depend on
+    // uYou's closed mergeAudioWithMP4VideoForDownloadItem: internals, which is
+    // where the actual hang lives even with m4a audio (#452/#241/#520/#830/#676).
+    // On any failure, fall through unchanged to uYou's original method below.
+    @try {
+        uYouItem *uyouItem = [item valueForKey:@"uYouItem"];
+        NSString *videoPath = [uyouItem cachedVideoPath];
+        NSString *audioPath = [uyouItem valueForKey:@"tmpAudioPath"] ?: [uyouItem cachedAudioPath];
+        NSString *outputPath = [uyouItem filePath];
+        if (uyouItem && videoPath.length && audioPath.length && outputPath.length) {
+            __weak id weakItem = item;
+            UYTMergeAudioVideo(videoPath, audioPath, outputPath, 40.0, ^(BOOL success) {
+                if (!success) {
+                    HBLogWarn(@"[uYouPatches] Own merge failed, falling back to uYou's mergeAudioWithMP4Video");
+                    id strongItem = weakItem;
+                    if (!strongItem) return;
+                    @try {
+                        %orig;
+                    } @catch (NSException *e) {
+                        HBLogWarn(@"[uYouPatches] mergeAudioWithMP4Video fallback failed: %@ for item: %@", e, strongItem);
+                        UYTFallbackToVideoOnly(strongItem);
+                    }
+                    return;
+                }
+                HBLogInfo(@"[uYouPatches] Own merge succeeded for mergeAudioWithMP4Video: %@", outputPath);
+                id strongItemForNotify = weakItem;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [[NSNotificationCenter defaultCenter] postNotificationName:@"downloadDidCompleteNotification" object:strongItemForNotify];
+                    [[NSNotificationCenter defaultCenter] postNotificationName:@"conversionDidCompleteNotification" object:strongItemForNotify];
+                });
+            });
+            return; // own-merge path owns completion (success or %orig fallback above)
+        }
+    } @catch (NSException *e) {
+        HBLogWarn(@"[uYouPatches] Own merge attempt threw, falling back to uYou's mergeAudioWithMP4Video: %@", e);
+    }
+
     // Generic stall watchdog (covers non-webm hangs too).
     UYTArmStallWatchdog(item, 45.0);
 
@@ -658,6 +789,42 @@ static void UYTArmStallWatchdog(id item, NSTimeInterval seconds) {
         HBLogWarn(@"[uYouPatches] Audio still WebM after conversion — skipping merge to avoid infinite hang");
         UYTFallbackToVideoOnly(item);
         return;
+    }
+
+    // Level-3 fix: try our own AVFoundation merge first (see mergeAudioWithMP4Video
+    // above for the full rationale). Falls through unchanged to uYou's original
+    // method on any failure.
+    @try {
+        uYouItem *uyouItem = [item valueForKey:@"uYouItem"];
+        NSString *videoPath = [uyouItem cachedVideoPath];
+        NSString *audioPath = [uyouItem valueForKey:@"tmpAudioPath"] ?: [uyouItem cachedAudioPath];
+        NSString *outputPath = [uyouItem filePath];
+        if (uyouItem && videoPath.length && audioPath.length && outputPath.length) {
+            __weak id weakItem = item;
+            UYTMergeAudioVideo(videoPath, audioPath, outputPath, 40.0, ^(BOOL success) {
+                if (!success) {
+                    HBLogWarn(@"[uYouPatches] Own merge failed, falling back to uYou's mergeAudioWithVideo");
+                    id strongItem = weakItem;
+                    if (!strongItem) return;
+                    @try {
+                        %orig;
+                    } @catch (NSException *e) {
+                        HBLogWarn(@"[uYouPatches] mergeAudioWithVideo fallback failed: %@ for item: %@", e, strongItem);
+                        UYTFallbackToVideoOnly(strongItem);
+                    }
+                    return;
+                }
+                HBLogInfo(@"[uYouPatches] Own merge succeeded for mergeAudioWithVideo: %@", outputPath);
+                id strongItemForNotify = weakItem;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [[NSNotificationCenter defaultCenter] postNotificationName:@"downloadDidCompleteNotification" object:strongItemForNotify];
+                    [[NSNotificationCenter defaultCenter] postNotificationName:@"conversionDidCompleteNotification" object:strongItemForNotify];
+                });
+            });
+            return; // own-merge path owns completion (success or %orig fallback above)
+        }
+    } @catch (NSException *e) {
+        HBLogWarn(@"[uYouPatches] Own merge attempt threw, falling back to uYou's mergeAudioWithVideo: %@", e);
     }
 
     // Generic stall watchdog.
