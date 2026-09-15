@@ -3,6 +3,7 @@
 // Phase 1 scaffold: innertube player request + format selection.
 
 #import <Foundation/Foundation.h>
+#import "YTSigDecipher.h"
 
 @interface DownloadsManager : NSObject
 + (instancetype)sharedInstance;
@@ -39,6 +40,7 @@ static NSString * const UYTClientVersion = @"19.45.1";
 @interface UYTDownloadPipeline : NSObject
 + (void)fetchFormatsForVideoID:(NSString *)videoID
                     completion:(void (^)(NSArray<UYTStreamFormat *> *formats, NSError *error))completion;
++ (UYTStreamFormat *)streamFormatFromDict:(NSDictionary *)f url:(NSString *)url;
 + (UYTStreamFormat *)bestMuxedFormat:(NSArray<UYTStreamFormat *> *)formats;
 + (UYTStreamFormat *)bestAudioFormat:(NSArray<UYTStreamFormat *> *)formats;
 @end
@@ -88,25 +90,66 @@ static NSString * const UYTClientVersion = @"19.45.1";
             }
             NSArray *streams = json[@"streamingData"][@"adaptiveFormats"];
             NSArray *muxed = json[@"streamingData"][@"formats"];
-            NSMutableArray *out = [NSMutableArray array];
+            NSMutableArray<UYTStreamFormat *> *out = [NSMutableArray array];
+            NSMutableArray<NSDictionary *> *ciphered = [NSMutableArray array];
             for (NSArray *list in @[streams ?: @[], muxed ?: @[]]) {
                 for (NSDictionary *f in list) {
                     NSString *u = f[@"url"];
-                    if (!u) continue; // signatureCipher fallback handled in phase 2
-                    UYTStreamFormat *sf = [[UYTStreamFormat alloc] init];
-                    sf.url = u;
-                    sf.itag = [f[@"itag"] integerValue];
-                    sf.mimeType = f[@"mimeType"];
-                    sf.bitrate = [f[@"bitrate"] longLongValue];
-                    sf.qualityLabel = f[@"qualityLabel"];
-                    sf.hasVideo = [sf.mimeType hasPrefix:@"video"];
-                    sf.hasAudio = [sf.mimeType hasPrefix:@"audio"] || ([sf.mimeType hasPrefix:@"video"] && ![f objectForKey:@"qualityLabel"]);
-                    [out addObject:sf];
+                    if (u) {
+                        [out addObject:[self streamFormatFromDict:f url:u]];
+                        continue;
+                    }
+                    // No plain url: YouTube gated this format behind a
+                    // signatureCipher. Resolve those as a batch below instead
+                    // of dropping them (was: `continue` - silently discarded
+                    // every format whenever ALL of them were ciphered, which
+                    // left `out` empty and produced NSURLErrorUnsupportedURL
+                    // (-1002) downstream once uYou's own broken native
+                    // extraction was the only thing left to fall back to).
+                    NSString *cipher = f[@"signatureCipher"] ?: f[@"cipher"];
+                    if (cipher) [ciphered addObject:f];
                 }
             }
-            completion(out, nil);
+
+            if (ciphered.count == 0) {
+                completion(out, nil);
+                return;
+            }
+
+            [UYTSigDecipher playerContextForVideoID:videoID completion:^(UYTPlayerJSContext *player, NSError *sigErr) {
+                if (!player) {
+                    NSLog(@"[UYTPipeline] signature decipher unavailable for %@ (%@); %lu ciphered format(s) dropped",
+                          videoID, sigErr.localizedDescription, (unsigned long)ciphered.count);
+                    completion(out, nil);
+                    return;
+                }
+                NSUInteger deciphered = 0;
+                for (NSDictionary *f in ciphered) {
+                    NSString *cipher = f[@"signatureCipher"] ?: f[@"cipher"];
+                    NSString *resolved = [UYTSigDecipher resolveURLFromSignatureCipher:cipher usingPlayer:player];
+                    if (resolved) {
+                        [out addObject:[self streamFormatFromDict:f url:resolved]];
+                        deciphered++;
+                    }
+                }
+                NSLog(@"[UYTPipeline] deciphered %lu/%lu ciphered format(s) for %@",
+                      (unsigned long)deciphered, (unsigned long)ciphered.count, videoID);
+                completion(out, nil);
+            }];
         }];
     [task resume];
+}
+
++ (UYTStreamFormat *)streamFormatFromDict:(NSDictionary *)f url:(NSString *)url {
+    UYTStreamFormat *sf = [[UYTStreamFormat alloc] init];
+    sf.url = url;
+    sf.itag = [f[@"itag"] integerValue];
+    sf.mimeType = f[@"mimeType"];
+    sf.bitrate = [f[@"bitrate"] longLongValue];
+    sf.qualityLabel = f[@"qualityLabel"];
+    sf.hasVideo = [sf.mimeType hasPrefix:@"video"];
+    sf.hasAudio = [sf.mimeType hasPrefix:@"audio"] || ([sf.mimeType hasPrefix:@"video"] && ![f objectForKey:@"qualityLabel"]);
+    return sf;
 }
 
 + (UYTStreamFormat *)bestMuxedFormat:(NSArray<UYTStreamFormat *> *)formats {
