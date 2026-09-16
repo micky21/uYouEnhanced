@@ -366,7 +366,10 @@ static BOOL uYouConvertWebmAudioToM4a(NSString *webmPath, NSString *m4aPath) {
 // same effect (mux one video track + one audio track into an .mp4), zero
 // dependency on uYou's own merge code. If anything about our own merge fails,
 // callers fall back to uYou's original method unchanged (see call sites below).
-static void UYTMergeAudioVideo(NSString *videoPath, NSString *audioPath, NSString *outputPath, NSTimeInterval timeout, void (^completion)(BOOL success)) {
+// Not static: also called from UYTSABR.xm's fallback path (SABR-downloaded
+// tracks still need muxing into one file; reuse this instead of adding a
+// second AVFoundation merge implementation).
+void UYTMergeAudioVideo(NSString *videoPath, NSString *audioPath, NSString *outputPath, NSTimeInterval timeout, void (^completion)(BOOL success)) {
     if (!videoPath.length || !audioPath.length || !outputPath.length) {
         completion(NO);
         return;

@@ -6,6 +6,11 @@
 NSString *uYouAccessGroupID();
 BOOL uYouIsSideStore();
 
+// Own A/V merge (AVFoundation, no dependency on uYou's closed merge code).
+// Defined in uYouPatches.xm; also used by UYTSABR.xm to mux SABR-downloaded
+// video+audio tracks.
+void UYTMergeAudioVideo(NSString *videoPath, NSString *audioPath, NSString *outputPath, NSTimeInterval timeout, void (^completion)(BOOL success));
+
 // From uYou 3.0.4 source (a0zhar/uYou-3.0.4-src)
 @interface PlayerManager : NSObject
 + (id)sharedInstance;

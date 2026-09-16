@@ -4,6 +4,7 @@
 
 #import <Foundation/Foundation.h>
 #import "YTSigDecipher.h"
+#import "UYTSABR.h"
 
 @interface DownloadsManager : NSObject
 + (instancetype)sharedInstance;
@@ -205,6 +206,21 @@ static NSString *UYTGetResolvedURL(NSString *vid) {
     [UYTDownloadPipeline fetchFormatsForVideoID:vid completion:^(NSArray<UYTStreamFormat *> *formats, NSError *error) {
         if (error || formats.count == 0) {
             NSLog(@"[UYTPipeline] no formats for %@ (%@)", vid, error.localizedDescription);
+            // Modern YouTube (21.29.3+) returns no stream URL at all - plain
+            // or signatureCipher - for this client context; innertube alone
+            // can't get us anything. Fall back to SABR: capture-and-replay
+            // the app's own live signed request instead of trying to derive
+            // a URL. Writes straight to the path UYTArmStallWatchdog already
+            // polls for once uYou's own (broken) flow reaches the merge
+            // hooks below, so no separate completion path is needed here.
+            if (UYTSABRHasValidCapture()) {
+                NSLog(@"[UYTPipeline] falling back to SABR for %@", vid);
+                UYTSABRFallbackDownloadForVideoID(vid, NO, ^(BOOL success, NSString *sabrErr) {
+                    NSLog(@"[UYTPipeline] SABR fallback for %@: %@", vid, success ? @"succeeded" : sabrErr);
+                });
+            } else {
+                NSLog(@"[UYTPipeline] no SABR capture available for %@ - play the video first", vid);
+            }
             return;
         }
         UYTStreamFormat *best = [UYTDownloadPipeline bestMuxedFormat:formats];
