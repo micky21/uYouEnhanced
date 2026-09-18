@@ -649,7 +649,13 @@ void UYTSABRFallbackDownloadForVideoID(NSString *videoID,
 
         NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
         NSString *outDir = [docs stringByAppendingPathComponent:@"uYouDownloads"];
-        [[NSFileManager defaultManager] createDirectoryAtPath:outDir withIntermediateDirectories:YES attributes:nil error:nil];
+        NSError *dirErr = nil;
+        BOOL dirOK = [[NSFileManager defaultManager] createDirectoryAtPath:outDir withIntermediateDirectories:YES attributes:nil error:&dirErr];
+        // NSLog, not HBLog: HBLog-tagged lines haven't been showing up in
+        // Console.app filtering for this device - verify with the logging
+        // path we know is actually visible, since "completion(YES,...)"
+        // alone hasn't been enough to confirm a real file landed on disk.
+        NSLog(@"[UYTPipeline] uYouDownloads dir ready=%@ (existed-or-created=%d) at %@", dirErr ? dirErr : @"ok", dirOK, outDir);
         NSString *outPath = [outDir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.mp4", videoID]];
 
         SABRRunDownload(videoItag, audioItag, ^(NSURL *videoURL, NSURL *audioURL, NSString *err) {
@@ -666,9 +672,13 @@ void UYTSABRFallbackDownloadForVideoID(NSString *videoID,
                     [[NSFileManager defaultManager] removeItemAtURL:audioURL error:nil];
                     if (!success) {
                         HBLogWarn(@"[UYTSABR] mux failed for %@", videoID);
+                        NSLog(@"[UYTPipeline] mux reported failure for %@, outPath=%@", videoID, outPath);
                         completion(NO, @"mux failed");
                         return;
                     }
+                    NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:outPath error:nil];
+                    NSLog(@"[UYTPipeline] mux reported success for %@ - file exists=%d size=%@ at %@",
+                          videoID, [[NSFileManager defaultManager] fileExistsAtPath:outPath], attrs[NSFileSize], outPath);
                     HBLogInfo(@"[UYTSABR] download+mux complete for %@ -> %@", videoID, outPath);
                     completion(YES, nil);
                 });
@@ -681,9 +691,13 @@ void UYTSABRFallbackDownloadForVideoID(NSString *videoID,
                 BOOL moved = [[NSFileManager defaultManager] moveItemAtPath:audioURL.path toPath:outPath error:&moveErr];
                 if (!moved) {
                     HBLogWarn(@"[UYTSABR] failed to place audio-only file for %@: %@", videoID, moveErr);
+                    NSLog(@"[UYTPipeline] failed to move audio-only file for %@: %@ (from %@ to %@)", videoID, moveErr, audioURL.path, outPath);
                     completion(NO, @"failed to place downloaded file");
                     return;
                 }
+                NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:outPath error:nil];
+                NSLog(@"[UYTPipeline] audio-only move succeeded for %@ - file exists=%d size=%@ at %@",
+                      videoID, [[NSFileManager defaultManager] fileExistsAtPath:outPath], attrs[NSFileSize], outPath);
                 HBLogInfo(@"[UYTSABR] audio-only download complete for %@ -> %@", videoID, outPath);
                 completion(YES, nil);
             }
