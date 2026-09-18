@@ -19,6 +19,7 @@
 
 @interface DownloadItem : NSObject
 @property (nonatomic, strong) NSString *videoID;
+@property (nonatomic, strong) NSString *filePath;
 - (void)setRemoteURL:(NSURL *)url;
 @end
 
