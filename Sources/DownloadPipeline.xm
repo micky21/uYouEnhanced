@@ -208,19 +208,16 @@ static NSString *UYTGetResolvedURL(NSString *vid) {
             NSLog(@"[UYTPipeline] no formats for %@ (%@)", vid, error.localizedDescription);
             // Modern YouTube (21.29.3+) returns no stream URL at all - plain
             // or signatureCipher - for this client context; innertube alone
-            // can't get us anything. Fall back to SABR: capture-and-replay
-            // the app's own live signed request instead of trying to derive
-            // a URL. Writes straight to the path UYTArmStallWatchdog already
-            // polls for once uYou's own (broken) flow reaches the merge
-            // hooks below, so no separate completion path is needed here.
-            if (UYTSABRHasValidCapture()) {
-                NSLog(@"[UYTPipeline] falling back to SABR for %@", vid);
-                UYTSABRFallbackDownloadForVideoID(vid, NO, ^(BOOL success, NSString *sabrErr) {
-                    NSLog(@"[UYTPipeline] SABR fallback for %@: %@", vid, success ? @"succeeded" : sabrErr);
-                });
-            } else {
-                NSLog(@"[UYTPipeline] no SABR capture available for %@ - play the video first", vid);
-            }
+            // can't get us anything. The actual SABR fallback trigger and
+            // completion handling lives in DownloadItem -setRemoteURL: below,
+            // where we have a reference to the specific DownloadItem to drive
+            // to completion - triggering it here was a dead end: %orig's own
+            // broken native flow fails with NSURLErrorUnsupportedURL (-1002)
+            // near-instantly (confirmed on-device: error shown before this
+            // method's own 1.5s %orig delay even elapses), long before SABR
+            // (confirmed ~48s for a real download) has anything to hand back,
+            // and nothing here has a way to signal a DownloadItem that
+            // doesn't exist yet.
             return;
         }
         UYTStreamFormat *best = [UYTDownloadPipeline bestMuxedFormat:formats];
@@ -252,6 +249,41 @@ static NSString *UYTGetResolvedURL(NSString *vid) {
             return;
         }
     }
+
+    // No working innertube URL for this video (modern YouTube returns none
+    // at all for our client context - see getLinksLocallyPlayerItem: above).
+    // Calling %orig(url) here hands uYou's native flow whatever broken URL
+    // it extracted itself, which fails almost instantly with
+    // NSURLErrorUnsupportedURL (-1002) - confirmed on-device, the error
+    // shows before SABR (which takes ~48s for a real download) could ever
+    // hand anything back. Skip %orig entirely in that case and drive THIS
+    // SAME DownloadItem to completion ourselves once SABR finishes, instead
+    // of relying on the merge-hook watchdog (uYouPatches.xm) that never gets
+    // armed because the flow never reaches the merge stage without a
+    // successful initial download.
+    if (UYTSABRHasValidCapture()) {
+        NSLog(@"[UYTPipeline] no working URL for %@, driving via SABR instead of uYou's native flow", vid);
+        __weak DownloadItem *weakSelf = self;
+        UYTSABRFallbackDownloadForVideoID(vid, NO, ^(BOOL success, NSString *sabrErr) {
+            NSLog(@"[UYTPipeline] SABR fallback for %@: %@", vid, success ? @"succeeded" : sabrErr);
+            if (!success) return;
+            DownloadItem *strongSelf = weakSelf;
+            if (!strongSelf) {
+                NSLog(@"[UYTPipeline] DownloadItem for %@ deallocated before SABR finished", vid);
+                return;
+            }
+            NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+            NSString *sabrPath = [docs stringByAppendingPathComponent:[NSString stringWithFormat:@"uYouDownloads/%@.mp4", vid]];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                strongSelf.filePath = sabrPath;
+                [[NSNotificationCenter defaultCenter] postNotificationName:@"downloadDidCompleteNotification" object:strongSelf];
+                [[NSNotificationCenter defaultCenter] postNotificationName:@"conversionDidCompleteNotification" object:strongSelf];
+            });
+        });
+        return; // do NOT call %orig - that's what produces the instant -1002
+    }
+
+    NSLog(@"[UYTPipeline] no working URL and no SABR capture for %@ - falling through to uYou's native flow (will likely fail)", vid);
     %orig;
 }
 %end
