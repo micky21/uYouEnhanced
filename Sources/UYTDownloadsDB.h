@@ -24,6 +24,17 @@ NS_ASSUME_NONNULL_BEGIN
 // "Downloaded" tab caches its list in memory, loaded once at launch/tab
 // access, not re-queried live. A row inserted here will not appear until
 // the app is fully relaunched - that's expected, not a bug in this insert.
+//
+// UYTDownloadsDB.m compiles as plain Objective-C (unmangled C symbol name),
+// while .xm callers (DownloadPipeline.xm) compile as Objective-C++ (mangled
+// symbols) - extern "C" makes both sides agree on the symbol name. Without
+// this, linking fails with "Undefined symbols ... declaration possibly
+// missing 'extern \"C\"'" - which is exactly what happened before this was
+// added.
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 BOOL UYTDownloadsDBInsertCompleted(NSString *videoID,
                                    NSString * _Nullable title,
                                    NSString * _Nullable channel,
@@ -34,5 +45,9 @@ BOOL UYTDownloadsDBInsertCompleted(NSString *videoID,
                                    NSTimeInterval duration,
                                    NSString *type, // "video" or "audio" - confirmed literal values via strings
                                    NSString *path);
+
+#ifdef __cplusplus
+} // extern "C"
+#endif
 
 NS_ASSUME_NONNULL_END
