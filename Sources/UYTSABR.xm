@@ -648,11 +648,14 @@ void UYTSABRFallbackDownloadForVideoID(NSString *videoID,
             return;
         }
         gInFlightCompletions[videoID] = [NSMutableArray arrayWithObject:[completion copy]];
-        // Every completion(...) call below now fans out to every waiter
-        // collected for this videoID (just this one caller, usually - unless
-        // more attached while the download was already running) instead of
-        // only the original caller.
-        completion = ^(BOOL success, NSString *err) {
+        // Fans out to every waiter collected for this videoID (just this one
+        // caller, usually - unless more attached while the download was
+        // already running) instead of only the original caller. Used in
+        // place of `completion` for the rest of this function - several
+        // nested blocks further down (SABRRunDownload's completion,
+        // UYTMergeAudioVideo's completion) need to see this fanned-out
+        // version, not the original single-caller one.
+        void (^fanOut)(BOOL, NSString *) = ^(BOOL success, NSString *err) {
             dispatch_async(SABRQueue(), ^{
                 NSArray<void (^)(BOOL, NSString *)> *waiters = gInFlightCompletions[videoID] ?: @[];
                 [gInFlightCompletions removeObjectForKey:videoID];
@@ -664,7 +667,7 @@ void UYTSABRFallbackDownloadForVideoID(NSString *videoID,
 
         if (!gCapURL || !gCapPlainBody.length) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                completion(NO, @"No SABR capture yet - play the video for a few seconds first.");
+                fanOut(NO, @"No SABR capture yet - play the video for a few seconds first.");
             });
             return;
         }
@@ -682,7 +685,7 @@ void UYTSABRFallbackDownloadForVideoID(NSString *videoID,
         if (audioOnly) videoItag = 0;
         if (videoItag == 0 && audioItag == 0) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                completion(NO, @"No compatible mp4/m4a itags in SABR capture.");
+                fanOut(NO, @"No compatible mp4/m4a itags in SABR capture.");
             });
             return;
         }
@@ -693,7 +696,7 @@ void UYTSABRFallbackDownloadForVideoID(NSString *videoID,
         BOOL dirOK = [[NSFileManager defaultManager] createDirectoryAtPath:outDir withIntermediateDirectories:YES attributes:nil error:&dirErr];
         // NSLog, not HBLog: HBLog-tagged lines haven't been showing up in
         // Console.app filtering for this device - verify with the logging
-        // path we know is actually visible, since "completion(YES,...)"
+        // path we know is actually visible, since "fanOut(YES,...)"
         // alone hasn't been enough to confirm a real file landed on disk.
         NSLog(@"[UYTPipeline] Downloaded dir ready=%@ (existed-or-created=%d) at %@", dirErr ? dirErr : @"ok", dirOK, outDir);
         NSString *outPath = [outDir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.mp4", videoID]];
@@ -701,7 +704,7 @@ void UYTSABRFallbackDownloadForVideoID(NSString *videoID,
         SABRRunDownload(videoItag, audioItag, ^(NSURL *videoURL, NSURL *audioURL, NSString *err) {
             if (err || !audioURL || (videoItag != 0 && !videoURL)) {
                 HBLogWarn(@"[UYTSABR] download failed for %@: %@", videoID, err);
-                completion(NO, err ?: @"SABR download failed");
+                fanOut(NO, err ?: @"SABR download failed");
                 return;
             }
             if (videoURL) {
@@ -713,14 +716,14 @@ void UYTSABRFallbackDownloadForVideoID(NSString *videoID,
                     if (!success) {
                         HBLogWarn(@"[UYTSABR] mux failed for %@", videoID);
                         NSLog(@"[UYTPipeline] mux reported failure for %@, outPath=%@", videoID, outPath);
-                        completion(NO, @"mux failed");
+                        fanOut(NO, @"mux failed");
                         return;
                     }
                     NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:outPath error:nil];
                     NSLog(@"[UYTPipeline] mux reported success for %@ - file exists=%d size=%@ at %@",
                           videoID, [[NSFileManager defaultManager] fileExistsAtPath:outPath], attrs[NSFileSize], outPath);
                     HBLogInfo(@"[UYTSABR] download+mux complete for %@ -> %@", videoID, outPath);
-                    completion(YES, nil);
+                    fanOut(YES, nil);
                 });
             } else {
                 // Audio-only: no muxing needed, just place the file where the
@@ -732,14 +735,14 @@ void UYTSABRFallbackDownloadForVideoID(NSString *videoID,
                 if (!moved) {
                     HBLogWarn(@"[UYTSABR] failed to place audio-only file for %@: %@", videoID, moveErr);
                     NSLog(@"[UYTPipeline] failed to move audio-only file for %@: %@ (from %@ to %@)", videoID, moveErr, audioURL.path, outPath);
-                    completion(NO, @"failed to place downloaded file");
+                    fanOut(NO, @"failed to place downloaded file");
                     return;
                 }
                 NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:outPath error:nil];
                 NSLog(@"[UYTPipeline] audio-only move succeeded for %@ - file exists=%d size=%@ at %@",
                       videoID, [[NSFileManager defaultManager] fileExistsAtPath:outPath], attrs[NSFileSize], outPath);
                 HBLogInfo(@"[UYTSABR] audio-only download complete for %@ -> %@", videoID, outPath);
-                completion(YES, nil);
+                fanOut(YES, nil);
             }
         });
     });
