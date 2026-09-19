@@ -23,6 +23,7 @@
 @property (nonatomic, strong) NSString *videoID;
 @property (nonatomic, strong) NSString *filePath;
 - (void)setRemoteURL:(NSURL *)url;
+- (void)createDownloadTask;
 @end
 
 static NSString * const UYTInnertubeURL = @"https://www.youtube.com/youtubei/v1/player?key=AIzaSyB-63vPrdThhKuerbB2N_l7Kwwcxj6yUAc";
@@ -363,6 +364,28 @@ static NSString *UYTGetResolvedURL(NSString *vid) {
     }
 
     NSLog(@"[UYTPipeline] no working URL and no SABR capture for %@ - falling through to uYou's native flow (will likely fail)", vid);
+    %orig;
+}
+
+// uYou's caller invokes createDownloadTask right after setRemoteURL:,
+// independently of whatever setRemoteURL: itself decided to do. When we
+// drove a video via SABR above, self.remoteURL was never set (we skipped
+// %orig entirely), so %orig here would build an NSURLRequest from a nil
+// URL and fail near-instantly with NSURLErrorUnsupportedURL (-1002) - a
+// SEPARATE failure from anything setRemoteURL: does, running in parallel
+// with our still-in-progress SABR download (confirmed on-device: the
+// progress bar we drive via UYTSABRFallbackDownloadForVideoID's progress
+// callback DOES tick upward briefly, then the row shows -1002 anyway and
+// nothing ever completes - exactly what a competing, instantly-failing
+// native download task racing our real one would look like).
+- (void)createDownloadTask {
+    NSString *vid = self.videoID ?: @"";
+    id currentRemoteURL = nil;
+    @try { currentRemoteURL = [self valueForKey:@"remoteURL"]; } @catch (NSException *e) {}
+    if (!currentRemoteURL && UYTSABRHasValidCapture()) {
+        NSLog(@"[UYTPipeline] skipping uYou's own createDownloadTask for %@ - remoteURL is nil (SABR is already driving this download)", vid);
+        return;
+    }
     %orig;
 }
 %end
