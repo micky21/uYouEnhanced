@@ -43,8 +43,17 @@ BOOL UYTSABRHasValidCapture(void);
 // poll for, so no new "download finished" signaling path is needed; the
 // watchdog already armed around uYou's own merge hooks picks this up.
 // Pass audioOnly:YES to skip the video track entirely.
+//
+// progress (optional, may be nil) is called on the main queue as segments
+// arrive, with fractionComplete in [0,1] - derived from UMP's own
+// downloadedMs/endTimeMs per track (time-based; SABR has no upfront
+// Content-Length to compute a byte-based percentage from). If several
+// DownloadItems are waiting on the same in-flight videoID (see
+// gInFlightCompletions in UYTSABR.xm), every one of their progress blocks
+// gets called, not just the first caller's.
 void UYTSABRFallbackDownloadForVideoID(NSString *videoID,
                                        BOOL audioOnly,
+                                       void (^_Nullable progress)(double fractionComplete),
                                        void (^completion)(BOOL success, NSString * _Nullable error));
 
 NS_ASSUME_NONNULL_END

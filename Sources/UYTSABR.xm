@@ -364,6 +364,11 @@ static void SABRDecodeFormatInit(const uint8_t *payload, NSUInteger size, uint64
 // one download.
 static NSMutableDictionary<NSString *, NSMutableArray<void (^)(BOOL, NSString *)> *> *gInFlightCompletions;
 
+// Parallel to gInFlightCompletions: every progress block for every caller
+// waiting on a given videoID, so a dedup-attached caller's own DownloadItem
+// still gets live progress updates, not just the eventual completion.
+static NSMutableDictionary<NSString *, NSMutableArray<void (^)(double)> *> *gInFlightProgress;
+
 static NSURL *gCapURL;
 static NSData *gCapPlainBody;
 static NSDictionary *gCapHeaders;
@@ -522,6 +527,7 @@ static YMSABRTrack *SABRMakeTrack(YMSABRFormat *fmt, NSString *ext) {
 // last segment, then calls completion(videoURL, audioURL, err) on main
 // queue. Pass videoItag == 0 for audio-only (videoURL is then nil).
 static void SABRRunDownload(uint64_t videoItag, uint64_t audioItag,
+                            void (^progress)(double fractionComplete),
                             void (^completion)(NSURL *videoURL, NSURL *audioURL, NSString *err)) {
     dispatch_async(SABRQueue(), ^{
         if (!gCapURL || !gCapPlainBody.length) {
@@ -598,6 +604,22 @@ static void SABRRunDownload(uint64_t videoItag, uint64_t audioItag,
                         if (!t.complete) allDone = NO;
                     }
                     if (allDone) { finish(nil); return; }
+                    if (progress) {
+                        // Time-based, not byte-based: SABR doesn't give an
+                        // upfront Content-Length to compute a byte percentage
+                        // from, but each track knows its own downloadedMs
+                        // against the endTimeMs from its FormatInit part.
+                        // Average across tracks so audio finishing early
+                        // doesn't read as 100% while video is still going.
+                        double sum = 0; int counted = 0;
+                        for (YMSABRTrack *t in trackList) {
+                            if (t.endTimeMs > 0) { sum += MIN(1.0, (double)t.downloadedMs / (double)t.endTimeMs); counted++; }
+                        }
+                        if (counted > 0) {
+                            double frac = sum / counted;
+                            dispatch_async(dispatch_get_main_queue(), ^{ progress(frac); });
+                        }
+                    }
                     BOOL advanced = NO;
                     for (YMSABRTrack *t in trackList)
                         if (!t.complete && t.lastSequence > beforeSeq[@(t.format.itag)].unsignedLongLongValue) advanced = YES;
@@ -633,9 +655,16 @@ BOOL UYTSABRHasValidCapture(void) {
 // recovery picks the result up without any new completion-signaling code.
 void UYTSABRFallbackDownloadForVideoID(NSString *videoID,
                                        BOOL audioOnly,
+                                       void (^progress)(double fractionComplete),
                                        void (^completion)(BOOL success, NSString * _Nullable error)) {
     dispatch_async(SABRQueue(), ^{
         if (!gInFlightCompletions) gInFlightCompletions = [NSMutableDictionary dictionary];
+        if (!gInFlightProgress) gInFlightProgress = [NSMutableDictionary dictionary];
+        if (progress) {
+            NSMutableArray<void (^)(double)> *progressWaiters = gInFlightProgress[videoID];
+            if (!progressWaiters) gInFlightProgress[videoID] = progressWaiters = [NSMutableArray array];
+            [progressWaiters addObject:[progress copy]];
+        }
         NSMutableArray<void (^)(BOOL, NSString *)> *pending = gInFlightCompletions[videoID];
         if (pending) {
             // A SABR download for this exact videoID is already running -
@@ -659,8 +688,17 @@ void UYTSABRFallbackDownloadForVideoID(NSString *videoID,
             dispatch_async(SABRQueue(), ^{
                 NSArray<void (^)(BOOL, NSString *)> *waiters = gInFlightCompletions[videoID] ?: @[];
                 [gInFlightCompletions removeObjectForKey:videoID];
+                [gInFlightProgress removeObjectForKey:videoID];
                 dispatch_async(dispatch_get_main_queue(), ^{
                     for (void (^cb)(BOOL, NSString *) in waiters) cb(success, err);
+                });
+            });
+        };
+        void (^progressFanOut)(double) = ^(double frac) {
+            dispatch_async(SABRQueue(), ^{
+                NSArray<void (^)(double)> *waiters = gInFlightProgress[videoID] ?: @[];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    for (void (^cb)(double) in waiters) cb(frac);
                 });
             });
         };
@@ -701,7 +739,7 @@ void UYTSABRFallbackDownloadForVideoID(NSString *videoID,
         NSLog(@"[UYTPipeline] Downloaded dir ready=%@ (existed-or-created=%d) at %@", dirErr ? dirErr : @"ok", dirOK, outDir);
         NSString *outPath = [outDir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.mp4", videoID]];
 
-        SABRRunDownload(videoItag, audioItag, ^(NSURL *videoURL, NSURL *audioURL, NSString *err) {
+        SABRRunDownload(videoItag, audioItag, progressFanOut, ^(NSURL *videoURL, NSURL *audioURL, NSString *err) {
             if (err || !audioURL || (videoItag != 0 && !videoURL)) {
                 HBLogWarn(@"[UYTSABR] download failed for %@: %@", videoID, err);
                 fanOut(NO, err ?: @"SABR download failed");

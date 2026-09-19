@@ -281,7 +281,23 @@ static NSString *UYTGetResolvedURL(NSString *vid) {
             typeAndQuality = [uyouItem valueForKey:@"typeAndQuality"];
         } @catch (NSException *e) {}
 
-        UYTSABRFallbackDownloadForVideoID(vid, NO, ^(BOOL success, NSString *sabrErr) {
+        // Reuse uYou's OWN progress plumbing instead of building custom UI -
+        // confirmed via strings on the real uYou.dylib: DownloadItem has a
+        // settable `downloadProgress` (NSProgress) property, and
+        // DownloadingCell's progressBar/progressLabel refresh off a
+        // "downloadProgressChangedNotification" the app posts whenever it
+        // changes. SABR has no upfront Content-Length, so this is scaled
+        // 0-1000 as a stand-in for a percentage rather than real byte counts.
+        NSProgress *sabrProgress = [NSProgress progressWithTotalUnitCount:1000];
+        @try { [self setValue:sabrProgress forKey:@"downloadProgress"]; } @catch (NSException *e) {}
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"downloadProgressChangedNotification" object:self];
+
+        UYTSABRFallbackDownloadForVideoID(vid, NO, ^(double frac) {
+            DownloadItem *progressSelf = weakSelf;
+            if (!progressSelf) return;
+            sabrProgress.completedUnitCount = (int64_t)(frac * 1000.0);
+            [[NSNotificationCenter defaultCenter] postNotificationName:@"downloadProgressChangedNotification" object:progressSelf];
+        }, ^(BOOL success, NSString *sabrErr) {
             NSLog(@"[UYTPipeline] SABR fallback for %@: %@", vid, success ? @"succeeded" : sabrErr);
             if (!success) return;
             DownloadItem *strongSelf = weakSelf;
@@ -310,6 +326,8 @@ static NSString *UYTGetResolvedURL(NSString *vid) {
 
             dispatch_async(dispatch_get_main_queue(), ^{
                 strongSelf.filePath = sabrPath;
+                sabrProgress.completedUnitCount = sabrProgress.totalUnitCount;
+                [[NSNotificationCenter defaultCenter] postNotificationName:@"downloadProgressChangedNotification" object:strongSelf];
                 [[NSNotificationCenter defaultCenter] postNotificationName:@"downloadDidCompleteNotification" object:strongSelf];
                 [[NSNotificationCenter defaultCenter] postNotificationName:@"conversionDidCompleteNotification" object:strongSelf];
             });
