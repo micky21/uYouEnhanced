@@ -616,7 +616,7 @@ BOOL UYTSABRHasValidCapture(void) {
 // Picks the best available mp4+m4a itags from the captured format list,
 // downloads both via SABR, then muxes with UYTMergeAudioVideo (AVFoundation,
 // uYouPatches.xm) into the exact path UYTArmStallWatchdog already polls for
-// (Documents/uYouDownloads/<videoID>.mp4) - so uYou's existing stalled-download
+// (Documents/Downloaded/<videoID>.mp4) - so uYou's existing stalled-download
 // recovery picks the result up without any new completion-signaling code.
 void UYTSABRFallbackDownloadForVideoID(NSString *videoID,
                                        BOOL audioOnly,
@@ -648,14 +648,14 @@ void UYTSABRFallbackDownloadForVideoID(NSString *videoID,
         }
 
         NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-        NSString *outDir = [docs stringByAppendingPathComponent:@"uYouDownloads"];
+        NSString *outDir = [docs stringByAppendingPathComponent:@"Downloaded"];
         NSError *dirErr = nil;
         BOOL dirOK = [[NSFileManager defaultManager] createDirectoryAtPath:outDir withIntermediateDirectories:YES attributes:nil error:&dirErr];
         // NSLog, not HBLog: HBLog-tagged lines haven't been showing up in
         // Console.app filtering for this device - verify with the logging
         // path we know is actually visible, since "completion(YES,...)"
         // alone hasn't been enough to confirm a real file landed on disk.
-        NSLog(@"[UYTPipeline] uYouDownloads dir ready=%@ (existed-or-created=%d) at %@", dirErr ? dirErr : @"ok", dirOK, outDir);
+        NSLog(@"[UYTPipeline] Downloaded dir ready=%@ (existed-or-created=%d) at %@", dirErr ? dirErr : @"ok", dirOK, outDir);
         NSString *outPath = [outDir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.mp4", videoID]];
 
         SABRRunDownload(videoItag, audioItag, ^(NSURL *videoURL, NSURL *audioURL, NSString *err) {

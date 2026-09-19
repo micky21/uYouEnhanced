@@ -3,8 +3,10 @@
 // Phase 1 scaffold: innertube player request + format selection.
 
 #import <Foundation/Foundation.h>
+#import <AVFoundation/AVFoundation.h>
 #import "YTSigDecipher.h"
 #import "UYTSABR.h"
+#import "UYTDownloadsDB.h"
 
 @interface DownloadsManager : NSObject
 + (instancetype)sharedInstance;
@@ -265,6 +267,20 @@ static NSString *UYTGetResolvedURL(NSString *vid) {
     if (UYTSABRHasValidCapture()) {
         NSLog(@"[UYTPipeline] no working URL for %@, driving via SABR instead of uYou's native flow", vid);
         __weak DownloadItem *weakSelf = self;
+        // uyouItem was already created by uYou's own earlier flow (before we
+        // intercept here) with real metadata from the YouTube page - grab it
+        // via KVC since this file's own minimal DownloadItem interface
+        // doesn't declare a typed uYouItem property.
+        id uyouItem = nil;
+        @try { uyouItem = [self valueForKey:@"uYouItem"]; } @catch (NSException *e) {}
+        NSString *title = nil, *channel = nil, *qualityLabel = nil, *typeAndQuality = nil;
+        @try {
+            title = [uyouItem valueForKey:@"title"];
+            channel = [uyouItem valueForKey:@"channel"];
+            qualityLabel = [uyouItem valueForKey:@"qualityLabel"];
+            typeAndQuality = [uyouItem valueForKey:@"typeAndQuality"];
+        } @catch (NSException *e) {}
+
         UYTSABRFallbackDownloadForVideoID(vid, NO, ^(BOOL success, NSString *sabrErr) {
             NSLog(@"[UYTPipeline] SABR fallback for %@: %@", vid, success ? @"succeeded" : sabrErr);
             if (!success) return;
@@ -274,7 +290,24 @@ static NSString *UYTGetResolvedURL(NSString *vid) {
                 return;
             }
             NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-            NSString *sabrPath = [docs stringByAppendingPathComponent:[NSString stringWithFormat:@"uYouDownloads/%@.mp4", vid]];
+            NSString *sabrPath = [docs stringByAppendingPathComponent:[NSString stringWithFormat:@"Downloaded/%@.mp4", vid]];
+
+            NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:sabrPath error:nil];
+            unsigned long long fileSize = [attrs[NSFileSize] unsignedLongLongValue];
+            NSTimeInterval duration = 0;
+            @try {
+                AVURLAsset *asset = [AVURLAsset URLAssetWithURL:[NSURL fileURLWithPath:sabrPath] options:nil];
+                duration = CMTimeGetSeconds(asset.duration);
+                if (isnan(duration) || isinf(duration)) duration = 0;
+            } @catch (NSException *e) {}
+
+            // uYou's own "Downloaded" tab reads from uyoudb.sqlite, not the
+            // filesystem - without this row the file exists but the app has
+            // no idea it's there. Schema/INSERT confirmed via strings on the
+            // real uYou.dylib binary (see UYTDownloadsDB.h).
+            UYTDownloadsDBInsertCompleted(vid, title, channel, nil, qualityLabel, typeAndQuality,
+                                           fileSize, duration, @"video", sabrPath);
+
             dispatch_async(dispatch_get_main_queue(), ^{
                 strongSelf.filePath = sabrPath;
                 [[NSNotificationCenter defaultCenter] postNotificationName:@"downloadDidCompleteNotification" object:strongSelf];

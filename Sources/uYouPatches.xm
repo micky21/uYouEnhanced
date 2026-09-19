@@ -490,7 +490,7 @@ static void UYTFallbackToVideoOnly(id item) {
         // 1) Preferred: the muxed mp4 our modern pipeline downloaded (has audio).
         if (vid.length) {
             NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) lastObject];
-            NSString *muxed = [docs stringByAppendingPathComponent:[NSString stringWithFormat:@"uYouDownloads/%@.mp4", vid]];
+            NSString *muxed = [docs stringByAppendingPathComponent:[NSString stringWithFormat:@"Downloaded/%@.mp4", vid]];
             if ([fm fileExistsAtPath:muxed]) {
                 src = muxed;
                 usedMuxed = YES;
@@ -545,7 +545,7 @@ static void UYTArmStallWatchdog(id item, NSTimeInterval seconds) {
             if ([ui respondsToSelector:@selector(videoID)]) vid = [ui valueForKey:@"videoID"];
             if (vid.length) {
                 NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) lastObject];
-                [candidates addObject:[docs stringByAppendingPathComponent:[NSString stringWithFormat:@"uYouDownloads/%@.mp4", vid]]];
+                [candidates addObject:[docs stringByAppendingPathComponent:[NSString stringWithFormat:@"Downloaded/%@.mp4", vid]]];
             }
             // Converted/downloaded audio (skip raw webm — unplayable natively)
             for (NSString *key in @[@"tmpAudioPath", @"cachedAudioPath"]) {
@@ -889,7 +889,7 @@ static void UYTArmStallWatchdog(id item, NSTimeInterval seconds) {
 
             NSString *docsDir = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) lastObject];
             NSString *fallbackName = [dstPath lastPathComponent];
-            NSString *fallbackPath = [docsDir stringByAppendingPathComponent:@"uYouDownloads"];
+            NSString *fallbackPath = [docsDir stringByAppendingPathComponent:@"Downloaded"];
             fallbackPath = [fallbackPath stringByAppendingPathComponent:fallbackName];
 
             // Create the directory if needed

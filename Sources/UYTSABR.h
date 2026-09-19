@@ -38,7 +38,7 @@ NS_ASSUME_NONNULL_BEGIN
 BOOL UYTSABRHasValidCapture(void);
 
 // Entry point: attempts a full SABR-based download for videoID, writing the
-// final muxed file to Documents/uYouDownloads/<videoID>.mp4 - the same path
+// final muxed file to Documents/Downloaded/<videoID>.mp4 - the same path
 // UYTArmStallWatchdog and UYTFallbackToVideoOnly (uYouPatches.xm) already
 // poll for, so no new "download finished" signaling path is needed; the
 // watchdog already armed around uYou's own merge hooks picks this up.
