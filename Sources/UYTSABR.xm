@@ -351,6 +351,19 @@ static void SABRDecodeFormatInit(const uint8_t *payload, NSUInteger size, uint64
 
 #pragma mark - Capture layer: the app's live signed videoplayback request
 
+// Tracks videoIDs with a SABR download already in flight, and every extra
+// completion block asking for the same videoID while it runs. Needed because
+// DownloadItem -setRemoteURL: (DownloadPipeline.xm) can fire several times in
+// a row for one user tap - confirmed on-device: 8 near-simultaneous "driving
+// via SABR" log lines for a single download attempt, apparently from uYou's
+// own native flow retrying across several candidate formats before giving up
+// on each. Without this, each one started its own full, redundant SABR
+// download and they all queued up serially on SABRQueue (itself serial),
+// so the 8th one wouldn't finish until 7 earlier ones - each ~30-60s - had
+// already run, easily pushing total wait past 5 minutes for what should be
+// one download.
+static NSMutableDictionary<NSString *, NSMutableArray<void (^)(BOOL, NSString *)> *> *gInFlightCompletions;
+
 static NSURL *gCapURL;
 static NSData *gCapPlainBody;
 static NSDictionary *gCapHeaders;
@@ -622,6 +635,33 @@ void UYTSABRFallbackDownloadForVideoID(NSString *videoID,
                                        BOOL audioOnly,
                                        void (^completion)(BOOL success, NSString * _Nullable error)) {
     dispatch_async(SABRQueue(), ^{
+        if (!gInFlightCompletions) gInFlightCompletions = [NSMutableDictionary dictionary];
+        NSMutableArray<void (^)(BOOL, NSString *)> *pending = gInFlightCompletions[videoID];
+        if (pending) {
+            // A SABR download for this exact videoID is already running -
+            // attach this caller instead of starting a fully independent,
+            // redundant download that would just queue up behind it on this
+            // same serial queue (see gInFlightCompletions declaration above).
+            [pending addObject:[completion copy]];
+            NSLog(@"[UYTPipeline] SABR download for %@ already in flight (%lu waiter(s) now) - not starting a duplicate",
+                  videoID, (unsigned long)pending.count);
+            return;
+        }
+        gInFlightCompletions[videoID] = [NSMutableArray arrayWithObject:[completion copy]];
+        // Every completion(...) call below now fans out to every waiter
+        // collected for this videoID (just this one caller, usually - unless
+        // more attached while the download was already running) instead of
+        // only the original caller.
+        completion = ^(BOOL success, NSString *err) {
+            dispatch_async(SABRQueue(), ^{
+                NSArray<void (^)(BOOL, NSString *)> *waiters = gInFlightCompletions[videoID] ?: @[];
+                [gInFlightCompletions removeObjectForKey:videoID];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    for (void (^cb)(BOOL, NSString *) in waiters) cb(success, err);
+                });
+            });
+        };
+
         if (!gCapURL || !gCapPlainBody.length) {
             dispatch_async(dispatch_get_main_queue(), ^{
                 completion(NO, @"No SABR capture yet - play the video for a few seconds first.");
