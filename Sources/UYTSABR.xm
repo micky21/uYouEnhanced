@@ -367,7 +367,7 @@ static NSMutableDictionary<NSString *, NSMutableArray<void (^)(BOOL, NSString *)
 // Parallel to gInFlightCompletions: every progress block for every caller
 // waiting on a given videoID, so a dedup-attached caller's own DownloadItem
 // still gets live progress updates, not just the eventual completion.
-static NSMutableDictionary<NSString *, NSMutableArray<void (^)(double)> *> *gInFlightProgress;
+static NSMutableDictionary<NSString *, NSMutableArray<void (^)(double, unsigned long long)> *> *gInFlightProgress;
 
 static NSURL *gCapURL;
 static NSData *gCapPlainBody;
@@ -527,7 +527,7 @@ static YMSABRTrack *SABRMakeTrack(YMSABRFormat *fmt, NSString *ext) {
 // last segment, then calls completion(videoURL, audioURL, err) on main
 // queue. Pass videoItag == 0 for audio-only (videoURL is then nil).
 static void SABRRunDownload(uint64_t videoItag, uint64_t audioItag,
-                            void (^progress)(double fractionComplete),
+                            void (^progress)(double fractionComplete, unsigned long long bytesDownloaded),
                             void (^completion)(NSURL *videoURL, NSURL *audioURL, NSString *err)) {
     dispatch_async(SABRQueue(), ^{
         if (!gCapURL || !gCapPlainBody.length) {
@@ -617,7 +617,9 @@ static void SABRRunDownload(uint64_t videoItag, uint64_t audioItag,
                         }
                         if (counted > 0) {
                             double frac = sum / counted;
-                            dispatch_async(dispatch_get_main_queue(), ^{ progress(frac); });
+                            unsigned long long bytes = 0;
+                            for (YMSABRTrack *t in trackList) bytes += t.bytesWritten;
+                            dispatch_async(dispatch_get_main_queue(), ^{ progress(frac, bytes); });
                         }
                     }
                     BOOL advanced = NO;
@@ -655,13 +657,13 @@ BOOL UYTSABRHasValidCapture(void) {
 // recovery picks the result up without any new completion-signaling code.
 void UYTSABRFallbackDownloadForVideoID(NSString *videoID,
                                        BOOL audioOnly,
-                                       void (^progress)(double fractionComplete),
+                                       void (^progress)(double fractionComplete, unsigned long long bytesDownloaded),
                                        void (^completion)(BOOL success, NSString * _Nullable error)) {
     dispatch_async(SABRQueue(), ^{
         if (!gInFlightCompletions) gInFlightCompletions = [NSMutableDictionary dictionary];
         if (!gInFlightProgress) gInFlightProgress = [NSMutableDictionary dictionary];
         if (progress) {
-            NSMutableArray<void (^)(double)> *progressWaiters = gInFlightProgress[videoID];
+            NSMutableArray<void (^)(double, unsigned long long)> *progressWaiters = gInFlightProgress[videoID];
             if (!progressWaiters) gInFlightProgress[videoID] = progressWaiters = [NSMutableArray array];
             [progressWaiters addObject:[progress copy]];
         }
@@ -694,11 +696,11 @@ void UYTSABRFallbackDownloadForVideoID(NSString *videoID,
                 });
             });
         };
-        void (^progressFanOut)(double) = ^(double frac) {
+        void (^progressFanOut)(double, unsigned long long) = ^(double frac, unsigned long long bytes) {
             dispatch_async(SABRQueue(), ^{
-                NSArray<void (^)(double)> *waiters = gInFlightProgress[videoID] ?: @[];
+                NSArray<void (^)(double, unsigned long long)> *waiters = gInFlightProgress[videoID] ?: @[];
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    for (void (^cb)(double) in waiters) cb(frac);
+                    for (void (^cb)(double, unsigned long long) in waiters) cb(frac, bytes);
                 });
             });
         };

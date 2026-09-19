@@ -47,13 +47,16 @@ BOOL UYTSABRHasValidCapture(void);
 // progress (optional, may be nil) is called on the main queue as segments
 // arrive, with fractionComplete in [0,1] - derived from UMP's own
 // downloadedMs/endTimeMs per track (time-based; SABR has no upfront
-// Content-Length to compute a byte-based percentage from). If several
+// Content-Length to compute a byte-based percentage from) - and
+// bytesDownloaded, the real running total across both tracks so far (used
+// to derive a formatted size/speed estimate for uYou's own DownloadItem UI
+// fields, since those need actual numbers, not just a fraction). If several
 // DownloadItems are waiting on the same in-flight videoID (see
 // gInFlightCompletions in UYTSABR.xm), every one of their progress blocks
 // gets called, not just the first caller's.
 void UYTSABRFallbackDownloadForVideoID(NSString *videoID,
                                        BOOL audioOnly,
-                                       void (^_Nullable progress)(double fractionComplete),
+                                       void (^_Nullable progress)(double fractionComplete, unsigned long long bytesDownloaded),
                                        void (^completion)(BOOL success, NSString * _Nullable error));
 
 NS_ASSUME_NONNULL_END

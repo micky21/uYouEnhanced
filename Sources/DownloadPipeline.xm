@@ -281,21 +281,43 @@ static NSString *UYTGetResolvedURL(NSString *vid) {
             typeAndQuality = [uyouItem valueForKey:@"typeAndQuality"];
         } @catch (NSException *e) {}
 
-        // Reuse uYou's OWN progress plumbing instead of building custom UI -
-        // confirmed via strings on the real uYou.dylib: DownloadItem has a
-        // settable `downloadProgress` (NSProgress) property, and
-        // DownloadingCell's progressBar/progressLabel refresh off a
-        // "downloadProgressChangedNotification" the app posts whenever it
-        // changes. SABR has no upfront Content-Length, so this is scaled
-        // 0-1000 as a stand-in for a percentage rather than real byte counts.
-        NSProgress *sabrProgress = [NSProgress progressWithTotalUnitCount:1000];
-        @try { [self setValue:sabrProgress forKey:@"downloadProgress"]; } @catch (NSException *e) {}
-        [[NSNotificationCenter defaultCenter] postNotificationName:@"downloadProgressChangedNotification" object:self];
+        // Reuse uYou's OWN progress plumbing instead of building custom UI.
+        // An earlier attempt here set a `downloadProgress` NSProgress
+        // property that doesn't actually exist on this class - it silently
+        // no-op'd through the @try/@catch around setValue:forKey:, which is
+        // why the UI never moved. Confirmed via otool -ov class-dump of the
+        // real uYou.dylib in this build what DownloadItem actually has:
+        //   float     progress          (0.0-1.0)
+        //   NSString *totalSize         (pre-formatted, e.g. "45.2 MB")
+        //   NSString *downloadedSize    (pre-formatted)
+        //   NSString *speed             (pre-formatted, e.g. "1.2 MB/s")
+        //   int       remainingTime     (seconds)
+        // DownloadingCell/DownloadingInfoButton read these directly and
+        // refresh off a "downloadProgressChangedNotification" post - same
+        // notification name confirmed via strings, reused as-is.
+        NSDate *sabrStartDate = [NSDate date];
+        NSByteCountFormatter *sabrByteFmt = [NSByteCountFormatter new];
+        sabrByteFmt.countStyle = NSByteCountFormatterCountStyleFile;
 
-        UYTSABRFallbackDownloadForVideoID(vid, NO, ^(double frac) {
+        UYTSABRFallbackDownloadForVideoID(vid, NO, ^(double frac, unsigned long long bytesDownloaded) {
             DownloadItem *progressSelf = weakSelf;
             if (!progressSelf) return;
-            sabrProgress.completedUnitCount = (int64_t)(frac * 1000.0);
+            NSTimeInterval elapsed = -[sabrStartDate timeIntervalSinceNow];
+            // SABR gives no upfront Content-Length - estimate a moving total
+            // from bytes-so-far/fraction-so-far, same technique most download
+            // UIs use when the real total isn't known ahead of time.
+            NSString *downloadedStr = [sabrByteFmt stringFromByteCount:(long long)bytesDownloaded];
+            NSString *totalStr = (frac > 0.02) ? [sabrByteFmt stringFromByteCount:(long long)(bytesDownloaded / frac)] : nil;
+            double bytesPerSec = (elapsed > 0.5) ? (double)bytesDownloaded / elapsed : 0;
+            NSString *speedStr = (bytesPerSec > 0) ? [NSString stringWithFormat:@"%@/s", [sabrByteFmt stringFromByteCount:(long long)bytesPerSec]] : nil;
+            int remaining = (frac > 0.02 && elapsed > 0.5) ? (int)(elapsed / frac * (1.0 - frac)) : 0;
+            @try {
+                [progressSelf setValue:@(frac) forKey:@"progress"];
+                if (downloadedStr) [progressSelf setValue:downloadedStr forKey:@"downloadedSize"];
+                if (totalStr) [progressSelf setValue:totalStr forKey:@"totalSize"];
+                if (speedStr) [progressSelf setValue:speedStr forKey:@"speed"];
+                [progressSelf setValue:@(remaining) forKey:@"remainingTime"];
+            } @catch (NSException *e) {}
             [[NSNotificationCenter defaultCenter] postNotificationName:@"downloadProgressChangedNotification" object:progressSelf];
         }, ^(BOOL success, NSString *sabrErr) {
             NSLog(@"[UYTPipeline] SABR fallback for %@: %@", vid, success ? @"succeeded" : sabrErr);
@@ -326,7 +348,12 @@ static NSString *UYTGetResolvedURL(NSString *vid) {
 
             dispatch_async(dispatch_get_main_queue(), ^{
                 strongSelf.filePath = sabrPath;
-                sabrProgress.completedUnitCount = sabrProgress.totalUnitCount;
+                @try {
+                    [strongSelf setValue:@1.0f forKey:@"progress"];
+                    [strongSelf setValue:[sabrByteFmt stringFromByteCount:(long long)fileSize] forKey:@"totalSize"];
+                    [strongSelf setValue:[sabrByteFmt stringFromByteCount:(long long)fileSize] forKey:@"downloadedSize"];
+                    [strongSelf setValue:@0 forKey:@"remainingTime"];
+                } @catch (NSException *e) {}
                 [[NSNotificationCenter defaultCenter] postNotificationName:@"downloadProgressChangedNotification" object:strongSelf];
                 [[NSNotificationCenter defaultCenter] postNotificationName:@"downloadDidCompleteNotification" object:strongSelf];
                 [[NSNotificationCenter defaultCenter] postNotificationName:@"conversionDidCompleteNotification" object:strongSelf];
