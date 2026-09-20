@@ -315,6 +315,22 @@ jobs:
             echo "All extensions are under PlugIns/ - OK for SideStore."
           fi
 
+          # SC_Info/Manifest.plist (FairPlay signature manifest, meaningless
+          # once decrypted and re-signed for sideloading) lists Extensions/
+          # AppMigrationExtension.appex/... under SinfReplicationPaths even
+          # though that extension isn't actually present anywhere in this
+          # IPA. AltServer reads this manifest when setting up its app
+          # extension install placeholders and fails with IXErrorDomain
+          # Code=2/8 ("Mismatched bundle IDs") because the leftover
+          # AppMigrationExtension entry doesn't match the resigned parent
+          # bundle ID prefix. Confirmed via `plutil -p` on this exact IPA.
+          SC_INFO_MATCHES="$(unzip -Z1 "$OUTNAME" | grep '/SC_Info/' || true)"
+          if [ -n "$SC_INFO_MATCHES" ]; then
+            echo "Removing stale SC_Info/ (FairPlay manifest, unused post-decryption):"
+            printf '%s\n' "$SC_INFO_MATCHES"
+            zip -q -d "$OUTNAME" "Payload/*/SC_Info/*" "Payload/*/SC_Info" || true
+          fi
+
           mkdir -p main/packages
           cp -f "$OUTNAME" "main/packages/$OUTNAME"
           find main/packages -maxdepth 1 -name "*.ipa" ! -name "$OUTNAME" -delete || true
