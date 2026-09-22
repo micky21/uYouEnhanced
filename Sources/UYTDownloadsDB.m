@@ -1,24 +1,44 @@
 #import "UYTDownloadsDB.h"
 #import <sqlite3.h>
 
-static NSString *UYTDownloadsDBPath(void) {
+// Two candidate locations, tried in order. The strings-based path we used
+// originally (Documents/uyoudb.sqlite, confirmed via strings on uYou.dylib
+// only as far as the bare "%@/uyoudb.sqlite" format string - NOT proof of
+// which directory feeds the %@) never got the file to actually show up in
+// uYou's own "All" tab across several confirmed-successful downloads and
+// app relaunches. A web search of other uYou installs describes the real
+// path as Documents/uYou/uyoudb.sqlite (a "uYou" subfolder) - not
+// independently confirmed here, so write to BOTH rather than guess wrong
+// again: harmless (CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE) if one
+// path is unused, and the NSLog below records whether Documents/uYou/
+// already existed before we touched it - if uYou's own code created that
+// folder in earlier launches, that's strong on-device confirmation of
+// which path is real.
+static NSArray<NSString *> *UYTDownloadsDBCandidatePaths(void) {
     NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-    return [docs stringByAppendingPathComponent:@"uyoudb.sqlite"];
+    NSString *uYouDir = [docs stringByAppendingPathComponent:@"uYou"];
+    BOOL uYouDirExisted = [[NSFileManager defaultManager] fileExistsAtPath:uYouDir];
+    NSError *mkErr = nil;
+    BOOL uYouDirOK = [[NSFileManager defaultManager] createDirectoryAtPath:uYouDir withIntermediateDirectories:YES attributes:nil error:&mkErr];
+    NSLog(@"[UYTPipeline] Documents/uYou/ existed-before-us=%d ready-now=%@ at %@",
+          uYouDirExisted, (uYouDirOK || mkErr == nil) ? @"ok" : mkErr, uYouDir);
+    return @[
+        [docs stringByAppendingPathComponent:@"uyoudb.sqlite"],
+        [uYouDir stringByAppendingPathComponent:@"uyoudb.sqlite"],
+    ];
 }
 
-BOOL UYTDownloadsDBInsertCompleted(NSString *videoID,
-                                   NSString *title,
-                                   NSString *channel,
-                                   NSString *channelURL,
-                                   NSString *qualityLabel,
-                                   NSString *typeAndQuality,
-                                   unsigned long long size,
-                                   NSTimeInterval duration,
-                                   NSString *type,
-                                   NSString *path) {
-    if (!videoID.length) return NO;
-
-    NSString *dbPath = UYTDownloadsDBPath();
+static BOOL UYTDownloadsDBInsertAtPath(NSString *dbPath,
+                                       NSString *videoID,
+                                       NSString *title,
+                                       NSString *channel,
+                                       NSString *channelURL,
+                                       NSString *qualityLabel,
+                                       NSString *typeAndQuality,
+                                       unsigned long long size,
+                                       NSTimeInterval duration,
+                                       NSString *type,
+                                       NSString *path) {
     sqlite3 *db = NULL;
     if (sqlite3_open([dbPath UTF8String], &db) != SQLITE_OK) {
         NSLog(@"[UYTPipeline] uyoudb.sqlite open failed at %@: %s", dbPath, sqlite3_errmsg(db));
@@ -82,10 +102,30 @@ BOOL UYTDownloadsDBInsertCompleted(NSString *videoID,
     }
 
     BOOL ok = (sqlite3_step(stmt) == SQLITE_DONE);
-    if (!ok) NSLog(@"[UYTPipeline] uyoudb.sqlite insert failed for %@: %s", videoID, sqlite3_errmsg(db));
-    else NSLog(@"[UYTPipeline] uyoudb.sqlite insert OK for %@ -> %@", videoID, path);
+    if (!ok) NSLog(@"[UYTPipeline] uyoudb.sqlite insert failed for %@ at %@: %s", videoID, dbPath, sqlite3_errmsg(db));
+    else NSLog(@"[UYTPipeline] uyoudb.sqlite insert OK for %@ at %@ -> %@", videoID, dbPath, path);
 
     sqlite3_finalize(stmt);
     sqlite3_close(db);
     return ok;
+}
+
+BOOL UYTDownloadsDBInsertCompleted(NSString *videoID,
+                                   NSString *title,
+                                   NSString *channel,
+                                   NSString *channelURL,
+                                   NSString *qualityLabel,
+                                   NSString *typeAndQuality,
+                                   unsigned long long size,
+                                   NSTimeInterval duration,
+                                   NSString *type,
+                                   NSString *path) {
+    if (!videoID.length) return NO;
+    BOOL anyOK = NO;
+    for (NSString *dbPath in UYTDownloadsDBCandidatePaths()) {
+        BOOL ok = UYTDownloadsDBInsertAtPath(dbPath, videoID, title, channel, channelURL,
+                                             qualityLabel, typeAndQuality, size, duration, type, path);
+        anyOK = anyOK || ok;
+    }
+    return anyOK;
 }
