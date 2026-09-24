@@ -149,10 +149,32 @@ jobs:
           echo ::add-mask::$URL_YT
           echo URL_YT=$URL_YT >> $GITHUB_ENV
 
+      # Temporary file hosts (catbox/litter, pixeldrain) expire or block
+      # hotlinking, and every dead link cost a failed build. Keep the last
+      # good decrypted IPA in this repo's private Actions cache and fall back
+      # to it when the given URL doesn't return a zip.
+      - name: Restore cached YouTube iPA
+        uses: actions/cache/restore@v6
+        with:
+          path: yt-ipa-cache/YouTube.ipa
+          key: youtube-ipa-${{ github.run_id }}
+          restore-keys: youtube-ipa-
+
       - name: Prepare YouTube iPA
         id: prepare_youtube
         run: |
-          wget "$YOUTUBE_URL" --quiet -O main/YouTube.ipa
+          mkdir -p yt-ipa-cache
+          if wget "$YOUTUBE_URL" --quiet -O main/YouTube.ipa && [ "$(head -c 2 main/YouTube.ipa)" = "PK" ]; then
+            echo "Downloaded YouTube iPA from the given URL"
+            cp -f main/YouTube.ipa yt-ipa-cache/YouTube.ipa
+            echo "fresh=true" >> $GITHUB_OUTPUT
+          elif [ -f yt-ipa-cache/YouTube.ipa ]; then
+            echo "::warning::YouTube iPA URL failed or did not return a zip - using the cached copy"
+            cp -f yt-ipa-cache/YouTube.ipa main/YouTube.ipa
+          else
+            echo "::error::Could not download the YouTube iPA and no cached copy exists"
+            exit 1
+          fi
           cd main
           mv YouTube.ipa YouTube.zip
           unzip -q YouTube.zip
@@ -162,6 +184,13 @@ jobs:
 
         env:
           YOUTUBE_URL: ${{ env.URL_YT }}
+
+      - name: Save YouTube iPA to cache
+        if: steps.prepare_youtube.outputs.fresh == 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: yt-ipa-cache/YouTube.ipa
+          key: youtube-ipa-${{ github.run_id }}
 
       - name: Fix compiling & Build Package
         id: build_package
