@@ -11,6 +11,7 @@
 #import <Foundation/Foundation.h>
 #import <HBLog.h>
 #import "UYTSABR.h"
+#import "UYTLog.h"
 #import "uYouPatches.h"
 
 // Forward decl for YouTube's HAMDataLoadRequest (not in public headers).
@@ -684,7 +685,7 @@ void UYTSABRFallbackDownloadForVideoID(NSString *videoID,
             // redundant download that would just queue up behind it on this
             // same serial queue (see gInFlightCompletions declaration above).
             [pending addObject:[completion copy]];
-            NSLog(@"[UYTPipeline] SABR download for %@ already in flight (%lu waiter(s) now) - not starting a duplicate",
+            UYTLog(@"[UYTPipeline] SABR download for %@ already in flight (%lu waiter(s) now) - not starting a duplicate",
                   videoID, (unsigned long)pending.count);
             return;
         }
@@ -748,7 +749,7 @@ void UYTSABRFallbackDownloadForVideoID(NSString *videoID,
         // Console.app filtering for this device - verify with the logging
         // path we know is actually visible, since "fanOut(YES,...)"
         // alone hasn't been enough to confirm a real file landed on disk.
-        NSLog(@"[UYTPipeline] Downloaded dir ready=%@ (existed-or-created=%d) at %@", dirErr ? dirErr : @"ok", dirOK, outDir);
+        UYTLog(@"[UYTPipeline] Downloaded dir ready=%@ (existed-or-created=%d) at %@", dirErr ? dirErr : @"ok", dirOK, outDir);
         NSString *outPath = UYTSABROutputPathForVideoID(videoID, audioOnly);
 
         SABRRunDownload(videoItag, audioItag, progressFanOut, ^(NSURL *videoURL, NSURL *audioURL, NSString *err) {
@@ -765,12 +766,12 @@ void UYTSABRFallbackDownloadForVideoID(NSString *videoID,
                     [[NSFileManager defaultManager] removeItemAtURL:audioURL error:nil];
                     if (!success) {
                         HBLogWarn(@"[UYTSABR] mux failed for %@", videoID);
-                        NSLog(@"[UYTPipeline] mux reported failure for %@, outPath=%@", videoID, outPath);
+                        UYTLog(@"[UYTPipeline] mux reported failure for %@, outPath=%@", videoID, outPath);
                         fanOut(NO, @"mux failed");
                         return;
                     }
                     NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:outPath error:nil];
-                    NSLog(@"[UYTPipeline] mux reported success for %@ - file exists=%d size=%@ at %@",
+                    UYTLog(@"[UYTPipeline] mux reported success for %@ - file exists=%d size=%@ at %@",
                           videoID, [[NSFileManager defaultManager] fileExistsAtPath:outPath], attrs[NSFileSize], outPath);
                     HBLogInfo(@"[UYTSABR] download+mux complete for %@ -> %@", videoID, outPath);
                     fanOut(YES, nil);
@@ -784,12 +785,12 @@ void UYTSABRFallbackDownloadForVideoID(NSString *videoID,
                 BOOL moved = [[NSFileManager defaultManager] moveItemAtPath:audioURL.path toPath:outPath error:&moveErr];
                 if (!moved) {
                     HBLogWarn(@"[UYTSABR] failed to place audio-only file for %@: %@", videoID, moveErr);
-                    NSLog(@"[UYTPipeline] failed to move audio-only file for %@: %@ (from %@ to %@)", videoID, moveErr, audioURL.path, outPath);
+                    UYTLog(@"[UYTPipeline] failed to move audio-only file for %@: %@ (from %@ to %@)", videoID, moveErr, audioURL.path, outPath);
                     fanOut(NO, @"failed to place downloaded file");
                     return;
                 }
                 NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:outPath error:nil];
-                NSLog(@"[UYTPipeline] audio-only move succeeded for %@ - file exists=%d size=%@ at %@",
+                UYTLog(@"[UYTPipeline] audio-only move succeeded for %@ - file exists=%d size=%@ at %@",
                       videoID, [[NSFileManager defaultManager] fileExistsAtPath:outPath], attrs[NSFileSize], outPath);
                 HBLogInfo(@"[UYTSABR] audio-only download complete for %@ -> %@", videoID, outPath);
                 fanOut(YES, nil);

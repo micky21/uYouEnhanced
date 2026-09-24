@@ -10,6 +10,7 @@
 #import "YTSigDecipher.h"
 #import "UYTSABR.h"
 #import "UYTDownloadsDB.h"
+#import "UYTLog.h"
 
 @interface DownloadsManager : NSObject
 + (instancetype)sharedInstance;
@@ -58,10 +59,10 @@ static void UYTRemoveFromDownloading(id uyouItem, NSString *vid) {
             [items removeObjectsAtIndexes:hits];
             [mgr setDownloadingItems];
         }
-        NSLog(@"[UYTPipeline] removed %lu finished item(s) for %@ from Downloading (%lu -> %lu)",
+        UYTLog(@"[UYTPipeline] removed %lu finished item(s) for %@ from Downloading (%lu -> %lu)",
               (unsigned long)hits.count, vid, (unsigned long)before, (unsigned long)items.count);
     } @catch (NSException *e) {
-        NSLog(@"[UYTPipeline] could not remove %@ from Downloading: %@", vid, e);
+        UYTLog(@"[UYTPipeline] could not remove %@ from Downloading: %@", vid, e);
     }
     [[NSNotificationCenter defaultCenter] postNotificationName:@"reloadDownloadingVCNotification" object:nil];
 }
@@ -77,7 +78,7 @@ static void UYTSaveThumbnail(id uyouItem, NSString *vid) {
         thumbPath = [uyouItem valueForKey:@"thumbnailPath"];
         image = [uyouItem valueForKey:@"image"];
     } @catch (NSException *e) {}
-    if (!thumbPath.length) { NSLog(@"[UYTPipeline] no thumbnailPath for %@", vid); return; }
+    if (!thumbPath.length) { UYTLog(@"[UYTPipeline] no thumbnailPath for %@", vid); return; }
     if ([[NSFileManager defaultManager] fileExistsAtPath:thumbPath]) return;
     BOOL jpeg = [@[@"jpg", @"jpeg"] containsObject:thumbPath.pathExtension.lowercaseString];
     void (^write)(UIImage *) = ^(UIImage *img) {
@@ -85,14 +86,14 @@ static void UYTSaveThumbnail(id uyouItem, NSString *vid) {
         [[NSFileManager defaultManager] createDirectoryAtPath:thumbPath.stringByDeletingLastPathComponent
                                   withIntermediateDirectories:YES attributes:nil error:nil];
         BOOL ok = [data writeToFile:thumbPath atomically:YES];
-        NSLog(@"[UYTPipeline] thumbnail for %@ written=%d at %@", vid, ok, thumbPath);
+        UYTLog(@"[UYTPipeline] thumbnail for %@ written=%d at %@", vid, ok, thumbPath);
     };
     if ([image isKindOfClass:[UIImage class]]) { write(image); return; }
     NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"https://i.ytimg.com/vi/%@/hqdefault.jpg", vid]];
     [[[NSURLSession sharedSession] dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
         UIImage *img = data ? [UIImage imageWithData:data] : nil;
         if (img) write(img);
-        else NSLog(@"[UYTPipeline] thumbnail fetch failed for %@: %@", vid, err);
+        else UYTLog(@"[UYTPipeline] thumbnail fetch failed for %@: %@", vid, err);
     }] resume];
 }
 
@@ -193,7 +194,7 @@ static NSString * const UYTClientVersion = @"19.45.1";
 
             [UYTSigDecipher playerContextForVideoID:videoID completion:^(UYTPlayerJSContext *player, NSError *sigErr) {
                 if (!player) {
-                    NSLog(@"[UYTPipeline] signature decipher unavailable for %@ (%@); %lu ciphered format(s) dropped",
+                    UYTLog(@"[UYTPipeline] signature decipher unavailable for %@ (%@); %lu ciphered format(s) dropped",
                           videoID, sigErr.localizedDescription, (unsigned long)ciphered.count);
                     completion(out, nil);
                     return;
@@ -207,7 +208,7 @@ static NSString * const UYTClientVersion = @"19.45.1";
                         deciphered++;
                     }
                 }
-                NSLog(@"[UYTPipeline] deciphered %lu/%lu ciphered format(s) for %@",
+                UYTLog(@"[UYTPipeline] deciphered %lu/%lu ciphered format(s) for %@",
                       (unsigned long)deciphered, (unsigned long)ciphered.count, videoID);
                 completion(out, nil);
             }];
@@ -279,7 +280,7 @@ static NSString *UYTGetResolvedURL(NSString *vid) {
     // Pre-fetch working stream URLs via innertube BEFORE %orig runs.
     [UYTDownloadPipeline fetchFormatsForVideoID:vid completion:^(NSArray<UYTStreamFormat *> *formats, NSError *error) {
         if (error || formats.count == 0) {
-            NSLog(@"[UYTPipeline] no formats for %@ (%@)", vid, error.localizedDescription);
+            UYTLog(@"[UYTPipeline] no formats for %@ (%@)", vid, error.localizedDescription);
             // Modern YouTube (21.29.3+) returns no stream URL at all - plain
             // or signatureCipher - for this client context; innertube alone
             // can't get us anything. The actual SABR fallback trigger and
@@ -297,7 +298,7 @@ static NSString *UYTGetResolvedURL(NSString *vid) {
         UYTStreamFormat *best = [UYTDownloadPipeline bestMuxedFormat:formats];
         if (best.url.length) {
             UYTStoreResolvedURL(vid, best.url);
-            NSLog(@"[UYTPipeline] cached working URL for %@ (itag=%ld)", vid, (long)best.itag);
+            UYTLog(@"[UYTPipeline] cached working URL for %@ (itag=%ld)", vid, (long)best.itag);
         }
     }];
 
@@ -318,7 +319,7 @@ static NSString *UYTGetResolvedURL(NSString *vid) {
     if (working.length) {
         NSURL *fixed = [NSURL URLWithString:working];
         if (fixed) {
-            NSLog(@"[UYTPipeline] swapped broken URL -> working innertube URL for %@", vid);
+            UYTLog(@"[UYTPipeline] swapped broken URL -> working innertube URL for %@", vid);
             %orig(fixed);
             return;
         }
@@ -336,7 +337,7 @@ static NSString *UYTGetResolvedURL(NSString *vid) {
     // armed because the flow never reaches the merge stage without a
     // successful initial download.
     if (UYTSABRHasValidCapture()) {
-        NSLog(@"[UYTPipeline] no working URL for %@, driving via SABR instead of uYou's native flow", vid);
+        UYTLog(@"[UYTPipeline] no working URL for %@, driving via SABR instead of uYou's native flow", vid);
         objc_setAssociatedObject(self, &kUYTSABRDrivenKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         __weak DownloadItem *weakSelf = self;
         // uyouItem was already created by uYou's own earlier flow (before we
@@ -364,8 +365,18 @@ static NSString *UYTGetResolvedURL(NSString *vid) {
             typeValue = [[uyouItem valueForKey:@"type"] stringValue];
         } @catch (NSException *e) {}
         BOOL audioOnly = [[targetPath.pathExtension lowercaseString] isEqualToString:@"m4a"];
-        NSLog(@"[UYTPipeline] uYouItem for %@: filePath=%@ path=%@ id=%@ type=%@ audioOnly=%d",
+        UYTLog(@"[UYTPipeline] uYouItem for %@: filePath=%@ path=%@ id=%@ type=%@ audioOnly=%d",
               vid, targetPath, dbPathValue, rowID, typeValue, audioOnly);
+        // Everything uYouItem computes about where its files live, so a
+        // playback failure for one format (mp4 vs webm) can be traced to the
+        // exact path uYou expects vs. where we put the file.
+        for (NSString *key in @[@"isMP4", @"videoFormat", @"audioFormat", @"quality", @"cachedVideoPath",
+                                @"cachedAudioPath", @"tmpVideoPath", @"tmpAudioPath", @"tmpMP4Path",
+                                @"tmpMKVPath", @"thumbnailPath", @"videoURL", @"audioURL"]) {
+            id v = nil;
+            @try { v = [uyouItem valueForKey:key]; } @catch (NSException *e) { v = @"<no such key>"; }
+            UYTLog(@"[UYTPipeline]   uYouItem.%@ = %@", key, v);
+        }
 
         // Reuse uYou's OWN progress plumbing instead of building custom UI.
         // An earlier attempt here set a `downloadProgress` NSProgress
@@ -406,11 +417,11 @@ static NSString *UYTGetResolvedURL(NSString *vid) {
             } @catch (NSException *e) {}
             [[NSNotificationCenter defaultCenter] postNotificationName:@"downloadProgressChangedNotification" object:progressSelf];
         }, ^(BOOL success, NSString *sabrErr) {
-            NSLog(@"[UYTPipeline] SABR fallback for %@: %@", vid, success ? @"succeeded" : sabrErr);
+            UYTLog(@"[UYTPipeline] SABR fallback for %@: %@", vid, success ? @"succeeded" : sabrErr);
             if (!success) return;
             DownloadItem *strongSelf = weakSelf;
             if (!strongSelf) {
-                NSLog(@"[UYTPipeline] DownloadItem for %@ deallocated before SABR finished", vid);
+                UYTLog(@"[UYTPipeline] DownloadItem for %@ deallocated before SABR finished", vid);
                 return;
             }
             NSFileManager *fm = [NSFileManager defaultManager];
@@ -424,11 +435,11 @@ static NSString *UYTGetResolvedURL(NSString *vid) {
                 [fm removeItemAtPath:sabrPath error:nil];
                 NSError *mvErr = nil;
                 if (![fm moveItemAtPath:sabrOut toPath:sabrPath error:&mvErr]) {
-                    NSLog(@"[UYTPipeline] could not move SABR file into uYou's filePath %@: %@", sabrPath, mvErr);
+                    UYTLog(@"[UYTPipeline] could not move SABR file into uYou's filePath %@: %@", sabrPath, mvErr);
                     sabrPath = sabrOut;
                 }
             }
-            NSLog(@"[UYTPipeline] final file for %@ at %@ exists=%d", vid, sabrPath, [fm fileExistsAtPath:sabrPath]);
+            UYTLog(@"[UYTPipeline] final file for %@ at %@ exists=%d", vid, sabrPath, [fm fileExistsAtPath:sabrPath]);
 
             NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:sabrPath error:nil];
             unsigned long long fileSize = [attrs[NSFileSize] unsignedLongLongValue];
@@ -466,7 +477,7 @@ static NSString *UYTGetResolvedURL(NSString *vid) {
         return; // do NOT call %orig - that's what produces the instant -1002
     }
 
-    NSLog(@"[UYTPipeline] no working URL and no SABR capture for %@ - falling through to uYou's native flow (will likely fail)", vid);
+    UYTLog(@"[UYTPipeline] no working URL and no SABR capture for %@ - falling through to uYou's native flow (will likely fail)", vid);
     %orig;
 }
 
@@ -486,7 +497,7 @@ static NSString *UYTGetResolvedURL(NSString *vid) {
     id currentRemoteURL = nil;
     @try { currentRemoteURL = [self valueForKey:@"remoteURL"]; } @catch (NSException *e) {}
     if (!currentRemoteURL && UYTSABRHasValidCapture()) {
-        NSLog(@"[UYTPipeline] skipping uYou's own createDownloadTask for %@ - remoteURL is nil (SABR is already driving this download)", vid);
+        UYTLog(@"[UYTPipeline] skipping uYou's own createDownloadTask for %@ - remoteURL is nil (SABR is already driving this download)", vid);
         return;
     }
     %orig;
