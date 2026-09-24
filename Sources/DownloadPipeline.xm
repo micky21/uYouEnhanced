@@ -6,6 +6,7 @@
 #import <AVFoundation/AVFoundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#import <MediaPlayer/MediaPlayer.h>
 #import "YTSigDecipher.h"
 #import "UYTSABR.h"
 #import "UYTDownloadsDB.h"
@@ -34,6 +35,36 @@
 
 // Marks DownloadItems whose download SABR is driving (no NSURLSession task).
 static char kUYTSABRDrivenKey;
+
+// uYou's player loads a downloaded item's artwork from uYouItem.thumbnailPath
+// (its own downloads save it next to the media). SABR downloads never wrote
+// one, and playing them crashed in -[MPMediaItemArtwork initWithImage:] with
+// a nil image (confirmed via on-device .ips crash report). Write it here.
+static void UYTSaveThumbnail(id uyouItem, NSString *vid) {
+    NSString *thumbPath = nil;
+    UIImage *image = nil;
+    @try {
+        thumbPath = [uyouItem valueForKey:@"thumbnailPath"];
+        image = [uyouItem valueForKey:@"image"];
+    } @catch (NSException *e) {}
+    if (!thumbPath.length) { NSLog(@"[UYTPipeline] no thumbnailPath for %@", vid); return; }
+    if ([[NSFileManager defaultManager] fileExistsAtPath:thumbPath]) return;
+    BOOL jpeg = [@[@"jpg", @"jpeg"] containsObject:thumbPath.pathExtension.lowercaseString];
+    void (^write)(UIImage *) = ^(UIImage *img) {
+        NSData *data = jpeg ? UIImageJPEGRepresentation(img, 0.9) : UIImagePNGRepresentation(img);
+        [[NSFileManager defaultManager] createDirectoryAtPath:thumbPath.stringByDeletingLastPathComponent
+                                  withIntermediateDirectories:YES attributes:nil error:nil];
+        BOOL ok = [data writeToFile:thumbPath atomically:YES];
+        NSLog(@"[UYTPipeline] thumbnail for %@ written=%d at %@", vid, ok, thumbPath);
+    };
+    if ([image isKindOfClass:[UIImage class]]) { write(image); return; }
+    NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"https://i.ytimg.com/vi/%@/hqdefault.jpg", vid]];
+    [[[NSURLSession sharedSession] dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *resp, NSError *err) {
+        UIImage *img = data ? [UIImage imageWithData:data] : nil;
+        if (img) write(img);
+        else NSLog(@"[UYTPipeline] thumbnail fetch failed for %@: %@", vid, err);
+    }] resume];
+}
 
 static NSString * const UYTInnertubeURL = @"https://www.youtube.com/youtubei/v1/player?key=AIzaSyB-63vPrdThhKuerbB2N_l7Kwwcxj6yUAc";
 static NSString * const UYTClientVersion = @"19.45.1";
@@ -386,6 +417,8 @@ static NSString *UYTGetResolvedURL(NSString *vid) {
                                            fileSize, duration, typeValue,
                                            dbPathValue.length ? dbPathValue : sabrPath.lastPathComponent);
 
+            UYTSaveThumbnail(uyouItem, vid);
+
             dispatch_async(dispatch_get_main_queue(), ^{
                 strongSelf.filePath = sabrPath;
                 @try {
@@ -443,6 +476,19 @@ static NSString *UYTGetResolvedURL(NSString *vid) {
         UIProgressView *bar = [button valueForKey:@"progressBar"];
         if ([bar isKindOfClass:[UIProgressView class]]) [bar setProgress:p animated:YES];
     } @catch (NSException *e) {}
+}
+%end
+
+// Belt-and-braces for the same crash: a nil image here throws
+// NSInvalidArgumentException and takes the whole app down. Substitute a
+// blank image so a missing thumbnail can only ever cost the artwork.
+%hook MPMediaItemArtwork
+- (id)initWithImage:(UIImage *)image {
+    if (!image) {
+        UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(1, 1)];
+        image = [renderer imageWithActions:^(UIGraphicsImageRendererContext *ctx) {}];
+    }
+    return %orig(image);
 }
 %end
 
