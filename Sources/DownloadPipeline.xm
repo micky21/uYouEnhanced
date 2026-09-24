@@ -13,6 +13,8 @@
 
 @interface DownloadsManager : NSObject
 + (instancetype)sharedInstance;
+- (NSMutableArray *)downloadItemsArray;
+- (void)setDownloadingItems;
 @end
 
 @interface AFHTTPSessionManager : NSObject
@@ -35,6 +37,34 @@
 
 // Marks DownloadItems whose download SABR is driving (no NSURLSession task).
 static char kUYTSABRDrivenKey;
+
+// uYou's own completion path removes a finished download from
+// DownloadsManager.downloadItemsArray (what the Downloading tab lists) and
+// refreshes that tab; SABR downloads bypass that path, so the finished row
+// stayed there (confirmed on-device). Do it ourselves. Method and
+// notification names confirmed via otool/strings on uYou.dylib.
+static void UYTRemoveFromDownloading(id uyouItem, NSString *vid) {
+    @try {
+        DownloadsManager *mgr = [%c(DownloadsManager) sharedInstance];
+        NSMutableArray *items = [mgr downloadItemsArray];
+        NSIndexSet *hits = [items indexesOfObjectsPassingTest:^BOOL(id obj, NSUInteger idx, BOOL *stop) {
+            if (obj == uyouItem) return YES;
+            id owner = nil;
+            @try { owner = [obj valueForKey:@"uYouItem"]; } @catch (NSException *e) {}
+            return owner == uyouItem;
+        }];
+        NSUInteger before = items.count;
+        if (hits.count) {
+            [items removeObjectsAtIndexes:hits];
+            [mgr setDownloadingItems];
+        }
+        NSLog(@"[UYTPipeline] removed %lu finished item(s) for %@ from Downloading (%lu -> %lu)",
+              (unsigned long)hits.count, vid, (unsigned long)before, (unsigned long)items.count);
+    } @catch (NSException *e) {
+        NSLog(@"[UYTPipeline] could not remove %@ from Downloading: %@", vid, e);
+    }
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"reloadDownloadingVCNotification" object:nil];
+}
 
 // uYou's player loads a downloaded item's artwork from uYouItem.thumbnailPath
 // (its own downloads save it next to the media). SABR downloads never wrote
@@ -430,6 +460,7 @@ static NSString *UYTGetResolvedURL(NSString *vid) {
                 [[NSNotificationCenter defaultCenter] postNotificationName:@"downloadProgressChangedNotification" object:strongSelf];
                 [[NSNotificationCenter defaultCenter] postNotificationName:@"downloadDidCompleteNotification" object:strongSelf];
                 [[NSNotificationCenter defaultCenter] postNotificationName:@"conversionDidCompleteNotification" object:strongSelf];
+                UYTRemoveFromDownloading(uyouItem, vid);
             });
         });
         return; // do NOT call %orig - that's what produces the instant -1002
