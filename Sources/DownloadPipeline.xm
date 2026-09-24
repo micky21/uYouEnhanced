@@ -274,13 +274,27 @@ static NSString *UYTGetResolvedURL(NSString *vid) {
         // doesn't declare a typed uYouItem property.
         id uyouItem = nil;
         @try { uyouItem = [self valueForKey:@"uYouItem"]; } @catch (NSException *e) {}
-        NSString *title = nil, *channel = nil, *qualityLabel = nil, *typeAndQuality = nil;
+        NSString *title = nil, *channel = nil, *channelURL = nil, *qualityLabel = nil, *typeAndQuality = nil;
+        NSString *targetPath = nil, *dbPathValue = nil, *rowID = nil, *typeValue = nil;
         @try {
             title = [uyouItem valueForKey:@"title"];
             channel = [uyouItem valueForKey:@"channel"];
+            channelURL = [uyouItem valueForKey:@"channelURL"];
             qualityLabel = [uyouItem valueForKey:@"qualityLabel"];
             typeAndQuality = [uyouItem valueForKey:@"typeAndQuality"];
+            // Use uYou's own values for where the file lives and how the DB
+            // row is keyed/typed (confirmed via otool class-dump of uYouItem):
+            // filePath is where uYou's player/share look for the file, type is
+            // the int its tabs filter on (`type` LIKE '%lu'), and
+            // downloadIdentifier is unique per download.
+            targetPath = [uyouItem valueForKey:@"filePath"];
+            dbPathValue = [uyouItem valueForKey:@"path"];
+            rowID = [uyouItem valueForKey:@"downloadIdentifier"];
+            typeValue = [[uyouItem valueForKey:@"type"] stringValue];
         } @catch (NSException *e) {}
+        BOOL audioOnly = [[targetPath.pathExtension lowercaseString] isEqualToString:@"m4a"];
+        NSLog(@"[UYTPipeline] uYouItem for %@: filePath=%@ path=%@ id=%@ type=%@ audioOnly=%d",
+              vid, targetPath, dbPathValue, rowID, typeValue, audioOnly);
 
         // Reuse uYou's OWN progress plumbing instead of building custom UI.
         // An earlier attempt here set a `downloadProgress` NSProgress
@@ -300,7 +314,7 @@ static NSString *UYTGetResolvedURL(NSString *vid) {
         NSByteCountFormatter *sabrByteFmt = [NSByteCountFormatter new];
         sabrByteFmt.countStyle = NSByteCountFormatterCountStyleFile;
 
-        UYTSABRFallbackDownloadForVideoID(vid, NO, ^(double frac, unsigned long long bytesDownloaded) {
+        UYTSABRFallbackDownloadForVideoID(vid, audioOnly, ^(double frac, unsigned long long bytesDownloaded) {
             DownloadItem *progressSelf = weakSelf;
             if (!progressSelf) return;
             NSTimeInterval elapsed = -[sabrStartDate timeIntervalSinceNow];
@@ -328,8 +342,22 @@ static NSString *UYTGetResolvedURL(NSString *vid) {
                 NSLog(@"[UYTPipeline] DownloadItem for %@ deallocated before SABR finished", vid);
                 return;
             }
-            NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-            NSString *sabrPath = [docs stringByAppendingPathComponent:[NSString stringWithFormat:@"Downloaded/%@.mp4", vid]];
+            NSFileManager *fm = [NSFileManager defaultManager];
+            NSString *sabrOut = UYTSABROutputPathForVideoID(vid, audioOnly);
+            NSString *sabrPath = targetPath.length ? targetPath : sabrOut;
+            // Several DownloadItems (uYou's audio + video items) share one
+            // uYouItem and each get this callback - only the first finds the
+            // SABR output still there to move; the rest see it already placed.
+            if (![sabrPath isEqualToString:sabrOut] && [fm fileExistsAtPath:sabrOut]) {
+                [fm createDirectoryAtPath:[sabrPath stringByDeletingLastPathComponent] withIntermediateDirectories:YES attributes:nil error:nil];
+                [fm removeItemAtPath:sabrPath error:nil];
+                NSError *mvErr = nil;
+                if (![fm moveItemAtPath:sabrOut toPath:sabrPath error:&mvErr]) {
+                    NSLog(@"[UYTPipeline] could not move SABR file into uYou's filePath %@: %@", sabrPath, mvErr);
+                    sabrPath = sabrOut;
+                }
+            }
+            NSLog(@"[UYTPipeline] final file for %@ at %@ exists=%d", vid, sabrPath, [fm fileExistsAtPath:sabrPath]);
 
             NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:sabrPath error:nil];
             unsigned long long fileSize = [attrs[NSFileSize] unsignedLongLongValue];
@@ -344,8 +372,9 @@ static NSString *UYTGetResolvedURL(NSString *vid) {
             // filesystem - without this row the file exists but the app has
             // no idea it's there. Schema/INSERT confirmed via strings on the
             // real uYou.dylib binary (see UYTDownloadsDB.h).
-            UYTDownloadsDBInsertCompleted(vid, title, channel, nil, qualityLabel, typeAndQuality,
-                                           fileSize, duration, @"video", sabrPath);
+            UYTDownloadsDBInsertCompleted(rowID, vid, title, channel, channelURL, qualityLabel, typeAndQuality,
+                                           fileSize, duration, typeValue,
+                                           dbPathValue.length ? dbPathValue : sabrPath.lastPathComponent);
 
             dispatch_async(dispatch_get_main_queue(), ^{
                 strongSelf.filePath = sabrPath;

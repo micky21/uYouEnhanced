@@ -655,19 +655,29 @@ BOOL UYTSABRHasValidCapture(void) {
 // uYouPatches.xm) into the exact path UYTArmStallWatchdog already polls for
 // (Documents/Downloaded/<videoID>.mp4) - so uYou's existing stalled-download
 // recovery picks the result up without any new completion-signaling code.
+// Audio-only and A/V downloads of the same video get distinct files (and
+// distinct in-flight dedup keys) so one can't overwrite or hijack the other.
+NSString *UYTSABROutputPathForVideoID(NSString *videoID, BOOL audioOnly) {
+    NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    NSString *name = audioOnly ? [NSString stringWithFormat:@"%@_sabr_audio.m4a", videoID]
+                               : [NSString stringWithFormat:@"%@_sabr.mp4", videoID];
+    return [[docs stringByAppendingPathComponent:@"Downloaded"] stringByAppendingPathComponent:name];
+}
+
 void UYTSABRFallbackDownloadForVideoID(NSString *videoID,
                                        BOOL audioOnly,
                                        void (^progress)(double fractionComplete, unsigned long long bytesDownloaded),
                                        void (^completion)(BOOL success, NSString * _Nullable error)) {
+    NSString *inflightKey = UYTSABROutputPathForVideoID(videoID, audioOnly);
     dispatch_async(SABRQueue(), ^{
         if (!gInFlightCompletions) gInFlightCompletions = [NSMutableDictionary dictionary];
         if (!gInFlightProgress) gInFlightProgress = [NSMutableDictionary dictionary];
         if (progress) {
-            NSMutableArray<void (^)(double, unsigned long long)> *progressWaiters = gInFlightProgress[videoID];
-            if (!progressWaiters) gInFlightProgress[videoID] = progressWaiters = [NSMutableArray array];
+            NSMutableArray<void (^)(double, unsigned long long)> *progressWaiters = gInFlightProgress[inflightKey];
+            if (!progressWaiters) gInFlightProgress[inflightKey] = progressWaiters = [NSMutableArray array];
             [progressWaiters addObject:[progress copy]];
         }
-        NSMutableArray<void (^)(BOOL, NSString *)> *pending = gInFlightCompletions[videoID];
+        NSMutableArray<void (^)(BOOL, NSString *)> *pending = gInFlightCompletions[inflightKey];
         if (pending) {
             // A SABR download for this exact videoID is already running -
             // attach this caller instead of starting a fully independent,
@@ -678,7 +688,7 @@ void UYTSABRFallbackDownloadForVideoID(NSString *videoID,
                   videoID, (unsigned long)pending.count);
             return;
         }
-        gInFlightCompletions[videoID] = [NSMutableArray arrayWithObject:[completion copy]];
+        gInFlightCompletions[inflightKey] = [NSMutableArray arrayWithObject:[completion copy]];
         // Fans out to every waiter collected for this videoID (just this one
         // caller, usually - unless more attached while the download was
         // already running) instead of only the original caller. Used in
@@ -688,9 +698,9 @@ void UYTSABRFallbackDownloadForVideoID(NSString *videoID,
         // version, not the original single-caller one.
         void (^fanOut)(BOOL, NSString *) = ^(BOOL success, NSString *err) {
             dispatch_async(SABRQueue(), ^{
-                NSArray<void (^)(BOOL, NSString *)> *waiters = gInFlightCompletions[videoID] ?: @[];
-                [gInFlightCompletions removeObjectForKey:videoID];
-                [gInFlightProgress removeObjectForKey:videoID];
+                NSArray<void (^)(BOOL, NSString *)> *waiters = gInFlightCompletions[inflightKey] ?: @[];
+                [gInFlightCompletions removeObjectForKey:inflightKey];
+                [gInFlightProgress removeObjectForKey:inflightKey];
                 dispatch_async(dispatch_get_main_queue(), ^{
                     for (void (^cb)(BOOL, NSString *) in waiters) cb(success, err);
                 });
@@ -698,7 +708,7 @@ void UYTSABRFallbackDownloadForVideoID(NSString *videoID,
         };
         void (^progressFanOut)(double, unsigned long long) = ^(double frac, unsigned long long bytes) {
             dispatch_async(SABRQueue(), ^{
-                NSArray<void (^)(double, unsigned long long)> *waiters = gInFlightProgress[videoID] ?: @[];
+                NSArray<void (^)(double, unsigned long long)> *waiters = gInFlightProgress[inflightKey] ?: @[];
                 dispatch_async(dispatch_get_main_queue(), ^{
                     for (void (^cb)(double, unsigned long long) in waiters) cb(frac, bytes);
                 });
@@ -739,7 +749,7 @@ void UYTSABRFallbackDownloadForVideoID(NSString *videoID,
         // path we know is actually visible, since "fanOut(YES,...)"
         // alone hasn't been enough to confirm a real file landed on disk.
         NSLog(@"[UYTPipeline] Downloaded dir ready=%@ (existed-or-created=%d) at %@", dirErr ? dirErr : @"ok", dirOK, outDir);
-        NSString *outPath = [outDir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.mp4", videoID]];
+        NSString *outPath = UYTSABROutputPathForVideoID(videoID, audioOnly);
 
         SABRRunDownload(videoItag, audioItag, progressFanOut, ^(NSURL *videoURL, NSURL *audioURL, NSString *err) {
             if (err || !audioURL || (videoItag != 0 && !videoURL)) {

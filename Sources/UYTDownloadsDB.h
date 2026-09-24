@@ -35,7 +35,8 @@ NS_ASSUME_NONNULL_BEGIN
 extern "C" {
 #endif
 
-BOOL UYTDownloadsDBInsertCompleted(NSString *videoID,
+BOOL UYTDownloadsDBInsertCompleted(NSString *rowID,
+                                   NSString *videoID,
                                    NSString * _Nullable title,
                                    NSString * _Nullable channel,
                                    NSString * _Nullable channelURL,
@@ -43,7 +44,7 @@ BOOL UYTDownloadsDBInsertCompleted(NSString *videoID,
                                    NSString * _Nullable typeAndQuality,
                                    unsigned long long size,
                                    NSTimeInterval duration,
-                                   NSString *type, // "video" or "audio" - confirmed literal values via strings
+                                   NSString *type, // integer as string - uYou queries `type` LIKE '%lu'
                                    NSString *path);
 
 #ifdef __cplusplus

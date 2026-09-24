@@ -1,34 +1,18 @@
 #import "UYTDownloadsDB.h"
 #import <sqlite3.h>
 
-// Two candidate locations, tried in order. The strings-based path we used
-// originally (Documents/uyoudb.sqlite, confirmed via strings on uYou.dylib
-// only as far as the bare "%@/uyoudb.sqlite" format string - NOT proof of
-// which directory feeds the %@) never got the file to actually show up in
-// uYou's own "All" tab across several confirmed-successful downloads and
-// app relaunches. A web search of other uYou installs describes the real
-// path as Documents/uYou/uyoudb.sqlite (a "uYou" subfolder) - not
-// independently confirmed here, so write to BOTH rather than guess wrong
-// again: harmless (CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE) if one
-// path is unused, and the NSLog below records whether Documents/uYou/
-// already existed before we touched it - if uYou's own code created that
-// folder in earlier launches, that's strong on-device confirmation of
-// which path is real.
-static NSArray<NSString *> *UYTDownloadsDBCandidatePaths(void) {
+// Confirmed on-device: Documents/uYou/ already existed before this tweak
+// ever touched it ("existed-before-us=1"), and rows written there show up
+// in uYou's "All" tab - that's the DB uYou actually reads.
+static NSString *UYTDownloadsDBPath(void) {
     NSString *docs = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
-    NSString *uYouDir = [docs stringByAppendingPathComponent:@"uYou"];
-    BOOL uYouDirExisted = [[NSFileManager defaultManager] fileExistsAtPath:uYouDir];
-    NSError *mkErr = nil;
-    BOOL uYouDirOK = [[NSFileManager defaultManager] createDirectoryAtPath:uYouDir withIntermediateDirectories:YES attributes:nil error:&mkErr];
-    NSLog(@"[UYTPipeline] Documents/uYou/ existed-before-us=%d ready-now=%@ at %@",
-          uYouDirExisted, (uYouDirOK || mkErr == nil) ? @"ok" : mkErr, uYouDir);
-    return @[
-        [docs stringByAppendingPathComponent:@"uyoudb.sqlite"],
-        [uYouDir stringByAppendingPathComponent:@"uyoudb.sqlite"],
-    ];
+    NSString *dir = [docs stringByAppendingPathComponent:@"uYou"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    return [dir stringByAppendingPathComponent:@"uyoudb.sqlite"];
 }
 
 static BOOL UYTDownloadsDBInsertAtPath(NSString *dbPath,
+                                       NSString *rowID,
                                        NSString *videoID,
                                        NSString *title,
                                        NSString *channel,
@@ -79,11 +63,11 @@ static BOOL UYTDownloadsDBInsertAtPath(NSString *dbPath,
     fmt.dateFormat = @"yyyy-MM-dd HH:mm"; // matches uYou's own format string, confirmed via strings
     NSString *timestamp = [fmt stringFromDate:[NSDate date]];
 
-    // id doubles as videoID: one row per video. A second SABR download of
-    // the same video is silently ignored (INSERT OR IGNORE), matching
-    // uYou's own de-dup behavior on this table.
+    // rowID is uYouItem's own downloadIdentifier - using videoID here made
+    // every re-download of the same video collide on the PRIMARY KEY and get
+    // silently dropped by INSERT OR IGNORE.
     NSArray<NSString *> *values = @[
-        videoID,
+        rowID.length ? rowID : videoID,
         videoID,
         title ?: @"",
         channel ?: @"",
@@ -92,7 +76,7 @@ static BOOL UYTDownloadsDBInsertAtPath(NSString *dbPath,
         typeAndQuality ?: @"",
         [NSString stringWithFormat:@"%llu", size],
         [NSString stringWithFormat:@"%.0f", duration],
-        type ?: @"video",
+        type ?: @"0",
         path,
         @"", // lyrics
         timestamp,
@@ -110,7 +94,8 @@ static BOOL UYTDownloadsDBInsertAtPath(NSString *dbPath,
     return ok;
 }
 
-BOOL UYTDownloadsDBInsertCompleted(NSString *videoID,
+BOOL UYTDownloadsDBInsertCompleted(NSString *rowID,
+                                   NSString *videoID,
                                    NSString *title,
                                    NSString *channel,
                                    NSString *channelURL,
@@ -121,11 +106,6 @@ BOOL UYTDownloadsDBInsertCompleted(NSString *videoID,
                                    NSString *type,
                                    NSString *path) {
     if (!videoID.length) return NO;
-    BOOL anyOK = NO;
-    for (NSString *dbPath in UYTDownloadsDBCandidatePaths()) {
-        BOOL ok = UYTDownloadsDBInsertAtPath(dbPath, videoID, title, channel, channelURL,
-                                             qualityLabel, typeAndQuality, size, duration, type, path);
-        anyOK = anyOK || ok;
-    }
-    return anyOK;
+    return UYTDownloadsDBInsertAtPath(UYTDownloadsDBPath(), rowID, videoID, title, channel, channelURL,
+                                      qualityLabel, typeAndQuality, size, duration, type, path);
 }

@@ -33,6 +33,10 @@ NS_ASSUME_NONNULL_BEGIN
 // real device log to confirm the capture hook actually fires and the
 // UMP/protobuf parsing matches what today's YouTube app sends.
 
+// Where a finished SABR download lands before the caller moves it into
+// uYou's own expected location (uYouItem -filePath).
+NSString *UYTSABROutputPathForVideoID(NSString *videoID, BOOL audioOnly);
+
 // True once a usable (non-expired) live videoplayback request has been
 // captured by the HAMDataLoadRequest hook below.
 BOOL UYTSABRHasValidCapture(void);
