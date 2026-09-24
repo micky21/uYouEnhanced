@@ -4,6 +4,8 @@
 
 #import <Foundation/Foundation.h>
 #import <AVFoundation/AVFoundation.h>
+#import <UIKit/UIKit.h>
+#import <objc/runtime.h>
 #import "YTSigDecipher.h"
 #import "UYTSABR.h"
 #import "UYTDownloadsDB.h"
@@ -25,6 +27,13 @@
 - (void)setRemoteURL:(NSURL *)url;
 - (void)createDownloadTask;
 @end
+
+@interface DownloadingCell : UITableViewCell
+- (void)updateProgressForInfoButton:(id)button downloadItem:(id)downloadItem;
+@end
+
+// Marks DownloadItems whose download SABR is driving (no NSURLSession task).
+static char kUYTSABRDrivenKey;
 
 static NSString * const UYTInnertubeURL = @"https://www.youtube.com/youtubei/v1/player?key=AIzaSyB-63vPrdThhKuerbB2N_l7Kwwcxj6yUAc";
 static NSString * const UYTClientVersion = @"19.45.1";
@@ -267,6 +276,7 @@ static NSString *UYTGetResolvedURL(NSString *vid) {
     // successful initial download.
     if (UYTSABRHasValidCapture()) {
         NSLog(@"[UYTPipeline] no working URL for %@, driving via SABR instead of uYou's native flow", vid);
+        objc_setAssociatedObject(self, &kUYTSABRDrivenKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         __weak DownloadItem *weakSelf = self;
         // uyouItem was already created by uYou's own earlier flow (before we
         // intercept here) with real metadata from the YouTube page - grab it
@@ -416,6 +426,23 @@ static NSString *UYTGetResolvedURL(NSString *vid) {
         return;
     }
     %orig;
+}
+%end
+
+// The percentage label follows the `progress` we set on DownloadItem, but
+// the UIProgressView next to it stays put for SABR downloads (confirmed
+// on-device) - uYou evidently drives the bar from its own NSURLSession task,
+// which SABR downloads don't have. After uYou refreshes an info button,
+// push the item's progress into that button's bar ourselves.
+%hook DownloadingCell
+- (void)updateProgressForInfoButton:(id)button downloadItem:(id)downloadItem {
+    %orig;
+    if (!downloadItem || !objc_getAssociatedObject(downloadItem, &kUYTSABRDrivenKey)) return;
+    @try {
+        float p = [[downloadItem valueForKey:@"progress"] floatValue];
+        UIProgressView *bar = [button valueForKey:@"progressBar"];
+        if ([bar isKindOfClass:[UIProgressView class]]) [bar setProgress:p animated:YES];
+    } @catch (NSException *e) {}
 }
 %end
 
